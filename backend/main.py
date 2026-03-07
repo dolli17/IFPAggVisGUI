@@ -94,33 +94,33 @@ def api_compare():
 # ═══════════════════════════════════════════════════════════════════
 
 @app.get("/api/viz/network")
-def api_viz_network(frame: int = 0):
+def api_viz_network(frame: int = 0, ligand: int = 1):
     try:
-        return render_network(session, frame)
+        return render_network(session, frame, ligand=ligand)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/viz/circle")
-def api_viz_circle(residue: str = None):
+def api_viz_circle(residue: str = None, ligand: int = 1):
     try:
-        return render_circle_chart(session, residue)
+        return render_circle_chart(session, residue, ligand=ligand)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/viz/heatmap")
-def api_viz_heatmap():
+def api_viz_heatmap(ligand: int = 1):
     try:
-        return render_distance_matrix(session)
+        return render_distance_matrix(session, ligand=ligand)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/viz/occurrence")
-def api_viz_occurrence():
+def api_viz_occurrence(ligand: int = 1):
     try:
-        return render_occurrence(session)
+        return render_occurrence(session, ligand=ligand)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

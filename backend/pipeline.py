@@ -46,6 +46,17 @@ class IFPSession:
         # ── Second simulation ──
         self.flat_df_2 = None
         self.aggregated_df_2 = None
+        self.interactions_2 = None
+        self.run_lengths_2 = None
+        self.colours_2 = None
+        self.distances_2 = None
+        self.identical_within_2 = None
+        self.node_positions_2 = None
+        self.dyngraph_2 = None
+        self.label_dict_2 = None
+        self.int_type_dict_2 = None
+        self.active_nodes_2 = None
+        self.edge_lists_2 = None
         self.ligand_name_2 = "Ligand_2"
         self.frame_count_2 = 0
         self.ifp_count_2 = 0
@@ -163,6 +174,7 @@ def load_csv(session: IFPSession, file_bytes: bytes, filename: str,
         session.flat_df_2 = flat_df
         session.ligand_name_2 = ligand_name
         session.frame_count_2 = len(flat_df)
+        session.interactions_2 = flat_df.columns.tolist()
         return {
             "filename": filename,
             "ligand_name": ligand_name,
@@ -234,6 +246,16 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     if is_second:
         session.aggregated_df_2 = agg_df
         session.ifp_count_2 = len(agg_df)
+        # Reset downstream for second sim
+        session.distances_2 = None
+        session.node_positions_2 = None
+        session.dyngraph_2 = None
+        session.run_lengths_2 = None
+        session.label_dict_2 = None
+        session.int_type_dict_2 = None
+        session.active_nodes_2 = None
+        session.edge_lists_2 = None
+        session.identical_within_2 = None
     else:
         session.aggregated_df = agg_df
         session.ifp_count = len(agg_df)
@@ -254,23 +276,34 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     }
 
 
-def _ensure_network_state(session: IFPSession):
+def _ensure_network_state(session: IFPSession, ligand: int = 1):
     """Build network state (positions, DynGraph, labels, edges) if not cached."""
-    agg = session.aggregated_df
-    if agg is None:
-        raise ValueError("Run aggregation first.")
+    if ligand == 2:
+        agg = session.aggregated_df_2
+        if agg is None:
+            raise ValueError("Run aggregation for second simulation first.")
+    else:
+        agg = session.aggregated_df
+        if agg is None:
+            raise ValueError("Run aggregation first.")
 
     # Interaction columns (exclude metadata)
     int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
 
+    # Select state fields based on ligand
+    pos_attr = "node_positions_2" if ligand == 2 else "node_positions"
+    label_attr = "label_dict_2" if ligand == 2 else "label_dict"
+    int_type_attr = "int_type_dict_2" if ligand == 2 else "int_type_dict"
+    active_attr = "active_nodes_2" if ligand == 2 else "active_nodes"
+    edges_attr = "edge_lists_2" if ligand == 2 else "edge_lists"
+    dyn_attr = "dyngraph_2" if ligand == 2 else "dyngraph"
+
     # Node positions (GraphViz neato layout → then remap to integer keys)
-    if session.node_positions is None:
-        # First get positions keyed by residue name strings
+    if getattr(session, pos_attr) is None:
         try:
             res_positions = visualise.get_unique_residue_position(
                 int_cols, save=False)
         except Exception:
-            # Fallback: spring layout if GraphViz not installed
             G = nx.Graph()
             G.add_node("LIG")
             res_unique = list(set(c.split("_")[0] for c in int_cols))
@@ -279,13 +312,10 @@ def _ensure_network_state(session: IFPSession):
                 G.add_edge("LIG", r)
             res_positions = nx.spring_layout(G, seed=42)
 
-        # Remap: integer node indices → positions of their residue
-        # DynGraph uses integers as node IDs, so positions must match
         int_positions = {}
         if "LIG" in res_positions:
             int_positions["LIG"] = res_positions["LIG"]
         else:
-            # LIG might be stored under different key
             for k, v in res_positions.items():
                 if "LIG" in str(k).upper():
                     int_positions["LIG"] = v
@@ -298,31 +328,35 @@ def _ensure_network_state(session: IFPSession):
             if res_name in res_positions:
                 int_positions[i] = res_positions[res_name]
             else:
-                # Fallback: place near center
                 int_positions[i] = (0.0, 0.0)
 
-        session.node_positions = int_positions
+        setattr(session, pos_attr, int_positions)
 
     # Labels and interaction types
-    if session.label_dict is None:
+    if getattr(session, label_attr) is None:
         number_nodes = list(range(len(int_cols)))
-        session.label_dict, session.int_type_dict = helpers.get_interaction_names(
+        labels, int_types = helpers.get_interaction_names(
             int_cols, number_nodes, "LIG")
+        setattr(session, label_attr, labels)
+        setattr(session, int_type_attr, int_types)
 
     # Active nodes and edge lists per IFP
-    if session.active_nodes is None:
+    if getattr(session, active_attr) is None:
         interacting_nodes = list(range(len(int_cols)))
-        session.active_nodes, session.edge_lists = helpers.define_existing_edge_in_IFP(
+        active, edges = helpers.define_existing_edge_in_IFP(
             agg[int_cols], "LIG", interacting_nodes,
             max_val=len(int_cols), min_val=0)
+        setattr(session, active_attr, active)
+        setattr(session, edges_attr, edges)
 
     # DynGraph
-    if session.dyngraph is None:
+    if getattr(session, dyn_attr) is None:
+        edge_lists = getattr(session, edges_attr)
         g = dn.DynGraph()
         for i in range(len(agg)):
-            for edge in session.edge_lists[i]:
+            for edge in edge_lists[i]:
                 g.add_interaction(edge[0], edge[1], t=i)
-        session.dyngraph = g
+        setattr(session, dyn_attr, g)
 
 
 def _fig_to_base64(fig, fmt="png") -> str:
@@ -339,12 +373,16 @@ def _fig_to_base64(fig, fmt="png") -> str:
 # VISUALIZATION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════
 
-def render_network(session: IFPSession, frame_index: int = 0) -> dict:
+def render_network(session: IFPSession, frame_index: int = 0, ligand: int = 1) -> dict:
     """Render a single network frame as PNG (base64)."""
-    _ensure_network_state(session)
-    agg = session.aggregated_df
+    _ensure_network_state(session, ligand)
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
     int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
-    pos_nodes = session.node_positions
+    pos_nodes = getattr(session, "node_positions_2" if ligand == 2 else "node_positions")
+    label_dict = getattr(session, "label_dict_2" if ligand == 2 else "label_dict")
+    int_type_dict = getattr(session, "int_type_dict_2" if ligand == 2 else "int_type_dict")
+    active_nodes = getattr(session, "active_nodes_2" if ligand == 2 else "active_nodes")
+    dyngraph = getattr(session, "dyngraph_2" if ligand == 2 else "dyngraph")
     total_frames = len(agg)
 
     if frame_index < 0 or frame_index >= total_frames:
@@ -376,9 +414,9 @@ def render_network(session: IFPSession, frame_index: int = 0) -> dict:
     axs[0].spines[:].set_color("#2d3348")
 
     # Network plot
-    s = session.dyngraph.time_slice(t_from=frame_index, t_to=frame_index)
+    s = dyngraph.time_slice(t_from=frame_index, t_to=frame_index)
     lig_node = ["LIG"]
-    node_list_all = session.active_nodes.get(frame_index, {}).get("LIG", [])
+    node_list_all = active_nodes.get(frame_index, {}).get("LIG", [])
 
     # Interaction glyph definitions
     interactions_glyphs = _get_interaction_glyphs(session.node_size)
@@ -399,7 +437,7 @@ def render_network(session: IFPSession, frame_index: int = 0) -> dict:
             base_nodes.set_edgecolor("#e2e8f0")
 
         for node in node_list_all:
-            int_type = session.int_type_dict.get(node, "Hydrophobic")
+            int_type = int_type_dict.get(node, "Hydrophobic")
             if int_type in interactions_glyphs:
                 glyph = interactions_glyphs[int_type]
                 nx.draw_networkx_nodes(
@@ -411,7 +449,7 @@ def render_network(session: IFPSession, frame_index: int = 0) -> dict:
 
     # Labels
     all_labels = lig_node + (node_list_all if node_list_all else [])
-    dict_labels = {x: session.label_dict.get(x, str(x)) for x in all_labels}
+    dict_labels = {x: label_dict.get(x, str(x)) for x in all_labels}
     nx.draw_networkx_labels(s, pos_nodes, dict_labels,
                             font_size=session.font_size_nodes,
                             font_color="#e2e8f0", ax=axs[1])
@@ -427,7 +465,7 @@ def render_network(session: IFPSession, frame_index: int = 0) -> dict:
         "frame_index": frame_index,
         "total_frames": total_frames,
         "occurrence": int(occurence_values[frame_index]),
-        "active_residues": [session.label_dict.get(n, str(n))
+        "active_residues": [label_dict.get(n, str(n))
                            for n in (node_list_all or [])],
     }
 
@@ -454,21 +492,24 @@ def _get_interaction_glyphs(node_size_basic):
     }
 
 
-def render_circle_chart(session: IFPSession, residue: str = None) -> dict:
+def render_circle_chart(session: IFPSession, residue: str = None, ligand: int = 1) -> dict:
     """Render circle chart(s) for one or all residues."""
-    agg = session.aggregated_df
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
     if agg is None:
         raise ValueError("Run aggregation first.")
 
     int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
 
     # Compute run lengths if not cached
-    if session.run_lengths is None:
-        session.run_lengths, session.colours = aggregate.calculate_lengths_interaction(
-            agg[int_cols])
+    rl_attr = "run_lengths_2" if ligand == 2 else "run_lengths"
+    col_attr = "colours_2" if ligand == 2 else "colours"
+    if getattr(session, rl_attr) is None:
+        rl, cols = aggregate.calculate_lengths_interaction(agg[int_cols])
+        setattr(session, rl_attr, rl)
+        setattr(session, col_attr, cols)
 
-    dfs = session.run_lengths
-    colours = session.colours
+    dfs = getattr(session, rl_attr)
+    colours = getattr(session, col_attr)
 
     # Determine residues
     all_residues = sorted(set(c.split("_")[0] for c in int_cols))
@@ -525,31 +566,36 @@ def render_circle_chart(session: IFPSession, residue: str = None) -> dict:
     }
 
 
-def render_distance_matrix(session: IFPSession) -> dict:
+def render_distance_matrix(session: IFPSession, ligand: int = 1) -> dict:
     """Render the distance matrix compound figure."""
-    agg = session.aggregated_df
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
     if agg is None:
         raise ValueError("Run aggregation first.")
 
     int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
 
+    dist_attr = "distances_2" if ligand == 2 else "distances"
+    ident_attr = "identical_within_2" if ligand == 2 else "identical_within"
+
     # Compute distances if not cached
-    if session.distances is None:
+    if getattr(session, dist_attr) is None:
         ifp_values = agg[int_cols].values.tolist()
-        session.distances = calculate.calculate_distances(
-            ifp_values, session.memory)
+        setattr(session, dist_attr, calculate.calculate_distances(
+            ifp_values, session.memory))
 
     # Compute identical IFPs within this simulation
-    if session.identical_within is None:
-        session.identical_within = calculate.calculate_where_diff_zero(
-            session.distances, agg.index.tolist())
+    if getattr(session, ident_attr) is None:
+        setattr(session, ident_attr, calculate.calculate_where_diff_zero(
+            getattr(session, dist_attr), agg.index.tolist()))
 
     cmap = plt.get_cmap(session.cmap_name)
+    distances = getattr(session, dist_attr)
+    identical_within = getattr(session, ident_attr)
 
     fig = visualise.plot_distance_distribution_sim_hist_line(
-        session.distances,
+        distances,
         agg["occurence"],
-        session.identical_within,
+        identical_within,
         cmap=cmap,
         fontsize=session.fontsize,
     )
@@ -570,13 +616,13 @@ def render_distance_matrix(session: IFPSession) -> dict:
     return {
         "image": img,
         "ifp_count": len(agg),
-        "max_distance": float(np.amax(session.distances)),
+        "max_distance": float(np.amax(distances)),
     }
 
 
-def render_occurrence(session: IFPSession) -> dict:
+def render_occurrence(session: IFPSession, ligand: int = 1) -> dict:
     """Render the occurrence line plot."""
-    agg = session.aggregated_df
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
     if agg is None:
         raise ValueError("Run aggregation first.")
 
@@ -616,25 +662,34 @@ def render_occurrence(session: IFPSession) -> dict:
 
 def run_comparison(session: IFPSession) -> dict:
     """Merge two simulations, compute distances, classify pairs."""
+    import time
+
     if session.aggregated_df is None or session.aggregated_df_2 is None:
         raise ValueError("Both simulations must be loaded and aggregated.")
 
     # Merge
+    t0 = time.perf_counter()
     session.merged_df = aggregate.summarise_two_interaction_dfs(
         session.aggregated_df, session.aggregated_df_2,
         session.ligand_name_1, session.ligand_name_2)
+    t1 = time.perf_counter()
+    print(f"[TIMING] run_comparison — merge: {t1 - t0:.3f}s")
 
     # Distance matrix on merged data
     int_cols = [c for c in session.merged_df.columns
                 if c not in ("diff_to_prev", "occurence", "Lig")]
     ifp_values = session.merged_df[int_cols].values.tolist()
+    t2 = time.perf_counter()
     session.cross_distances = calculate.calculate_distances(
         ifp_values, session.memory)
+    t3 = time.perf_counter()
+    print(f"[TIMING] run_comparison — distances ({len(ifp_values)} IFPs): {t3 - t2:.3f}s")
 
     # Classify pairs
     a = session.merged_df["Lig"].values
     lig_names = [session.ligand_name_1, session.ligand_name_2]
 
+    t4 = time.perf_counter()
     session.identical_ifps, session.similar_ifps, session.dissimilar_ifps = \
         calculate.calculate_where_diff_and_sim(
             a, session.cross_distances, lig_names,
@@ -642,6 +697,9 @@ def run_comparison(session: IFPSession) -> dict:
             session.similarity_threshold,
             session.dissimilarity_threshold,
             session.dissimilarity_bool)
+    t5 = time.perf_counter()
+    print(f"[TIMING] run_comparison — classify: {t5 - t4:.3f}s")
+    print(f"[TIMING] run_comparison — TOTAL: {t5 - t0:.3f}s")
 
     return {
         "merged_ifps": len(session.merged_df),
@@ -653,15 +711,20 @@ def run_comparison(session: IFPSession) -> dict:
 
 def render_comparison(session: IFPSession) -> dict:
     """Render the six-lane comparison plot."""
+    import time
+
     if session.identical_ifps is None or session.similar_ifps is None:
         raise ValueError("Run comparison first.")
 
     a = session.merged_df["Lig"].values
     lig_names = [session.ligand_name_1, session.ligand_name_2]
 
+    t0 = time.perf_counter()
     fig = visualise.plot_similarity_between_ligands(
         a, session.identical_ifps, session.similar_ifps,
         lig_names, fontsize=session.fontsize)
+    t1 = time.perf_counter()
+    print(f"[TIMING] render_comparison — plot_similarity: {t1 - t0:.3f}s")
 
     fig.patch.set_facecolor("#0f1117")
     for ax in fig.get_axes():
@@ -672,7 +735,11 @@ def render_comparison(session: IFPSession) -> dict:
         for spine in ax.spines.values():
             spine.set_color("#2d3348")
 
+    t2 = time.perf_counter()
     img = _fig_to_base64(fig)
+    t3 = time.perf_counter()
+    print(f"[TIMING] render_comparison — fig_to_base64: {t3 - t2:.3f}s")
+    print(f"[TIMING] render_comparison — TOTAL: {t3 - t0:.3f}s")
 
     return {"image": img}
 

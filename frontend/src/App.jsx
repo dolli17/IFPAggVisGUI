@@ -139,6 +139,8 @@ export default function App() {
 
   // ── UI state ──
   const [tab, setTab] = useState("network");
+  const [viewMode, setViewMode] = useState("ligand"); // "ligand" or "comparison"
+  const [activeLigand, setActiveLigand] = useState(1);
   const [sections, setSections] = useState({ data: true, pipeline: true, filter: true });
   const [networkFrame, setNetworkFrame] = useState(0);
   const [circleResidue, setCircleResidue] = useState(null);
@@ -237,41 +239,51 @@ export default function App() {
 
   // ── Visualization loading ──
   const loadViz = useCallback(async (vizTab, opts = {}) => {
-    const key = `viz_${vizTab}`;
-    await withLoading(key, async () => {
+    const lig = opts.ligand || 1;
+    const cacheKey = vizTab === "comparison" ? "comparison" : `${vizTab}_${lig}`;
+    const loadingKey = `viz_${vizTab}`;
+    await withLoading(loadingKey, async () => {
       let data;
       switch (vizTab) {
         case "network":
-          data = await api.getVizNetwork(opts.frame || 0);
+          data = await api.getVizNetwork(opts.frame || 0, lig);
           break;
         case "circle":
-          data = await api.getVizCircle(opts.residue || null);
+          data = await api.getVizCircle(opts.residue || null, lig);
           break;
         case "heatmap":
-          data = await api.getVizHeatmap();
+          data = await api.getVizHeatmap(lig);
           break;
         case "occurrence":
-          data = await api.getVizOccurrence();
+          data = await api.getVizOccurrence(lig);
           break;
         case "comparison":
           data = await api.getVizComparison();
           break;
       }
       if (data) {
-        setVizData(p => ({ ...p, [vizTab]: data }));
+        setVizData(p => ({ ...p, [cacheKey]: data }));
       }
       return data;
     });
   }, []);
 
-  // Load viz when tab changes (if aggregation is done)
+  // Load viz when tab/ligand/viewMode changes (if aggregation is done)
   useEffect(() => {
-    if (!session?.has_aggregation) return;
-    if (tab === "comparison" && !session?.has_comparison) return;
-    if (!vizData[tab]) {
-      loadViz(tab, { frame: networkFrame, residue: circleResidue });
+    if (viewMode === "comparison") {
+      if (!session?.has_comparison) return;
+      if (!vizData["comparison"]) {
+        loadViz("comparison");
+      }
+      return;
     }
-  }, [tab, session]);
+    if (!session?.has_aggregation) return;
+    if (activeLigand === 2 && !session?.has_second_aggregation) return;
+    const cacheKey = `${tab}_${activeLigand}`;
+    if (!vizData[cacheKey]) {
+      loadViz(tab, { frame: networkFrame, residue: circleResidue, ligand: activeLigand });
+    }
+  }, [tab, session, activeLigand, viewMode]);
 
   // ── Parameter sync ──
   const syncParam = async (key, value) => {
@@ -292,13 +304,15 @@ export default function App() {
   const hasComparison = session?.has_comparison;
   const hasPdb = session?.has_pdb;
 
-  const tabs = [
+  const vizTabs = [
     { id: "network", label: "Netzwerk" },
     { id: "circle", label: "Kreisdiagramm" },
     { id: "heatmap", label: "Distanzmatrix" },
     { id: "occurrence", label: "Vorkommen" },
-    { id: "comparison", label: "Vergleich" },
   ];
+
+  // Current cache key for the active viz
+  const currentCacheKey = viewMode === "comparison" ? "comparison" : `${tab}_${activeLigand}`;
 
   // ═══════════════════════════════════════════════════════════════
   // RENDER
@@ -510,44 +524,91 @@ export default function App() {
 
         {/* ════════ CENTER: Tabs + Viz ════════ */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-          {/* Tab bar */}
-          <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.surface, padding: "0 12px", flexShrink: 0 }}>
-            <div style={{ display: "flex", gap: 2, flex: 1 }}>
-              {tabs.map(t => {
-                const disabled = !hasAgg || (t.id === "comparison" && !hasComparison);
-                return (
-                  <div key={t.id}
-                    onClick={() => !disabled && setTab(t.id)}
-                    style={{
-                      padding: "10px 14px", fontSize: 12, cursor: disabled ? "default" : "pointer",
-                      color: tab === t.id ? C.accent : C.textDim,
-                      borderBottom: `2px solid ${tab === t.id ? C.accent : "transparent"}`,
-                      fontWeight: tab === t.id ? 600 : 400,
-                      background: tab === t.id ? C.accentDim : "transparent",
-                      opacity: disabled ? 0.35 : 1,
-                      transition: "all .15s",
-                    }}>{t.label}</div>
-                );
-              })}
+          {/* Ligand toggle + Comparison button */}
+          <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.surface, padding: "6px 12px", flexShrink: 0, gap: 6 }}>
+            {/* Ligand pills */}
+            <div style={{ display: "flex", gap: 4, flex: 1 }}>
+              <div
+                onClick={() => { setViewMode("ligand"); setActiveLigand(1); }}
+                style={{
+                  padding: "5px 14px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                  background: viewMode === "ligand" && activeLigand === 1 ? C.accent : "transparent",
+                  color: viewMode === "ligand" && activeLigand === 1 ? "#fff" : C.textDim,
+                  border: `1px solid ${viewMode === "ligand" && activeLigand === 1 ? C.accent : C.border}`,
+                  fontWeight: 600, transition: "all .15s",
+                }}>
+                {session?.ligand_name_1 || "Ligand 1"}
+              </div>
+              {hasSecondAgg && (
+                <div
+                  onClick={() => { setViewMode("ligand"); setActiveLigand(2); }}
+                  style={{
+                    padding: "5px 14px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                    background: viewMode === "ligand" && activeLigand === 2 ? C.pink : "transparent",
+                    color: viewMode === "ligand" && activeLigand === 2 ? "#fff" : C.textDim,
+                    border: `1px solid ${viewMode === "ligand" && activeLigand === 2 ? C.pink : C.border}`,
+                    fontWeight: 600, transition: "all .15s",
+                  }}>
+                  {session?.ligand_name_2 || "Ligand 2"}
+                </div>
+              )}
             </div>
+            {/* Comparison button — separate */}
+            {hasComparison && (
+              <div
+                onClick={() => setViewMode("comparison")}
+                style={{
+                  padding: "5px 14px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                  background: viewMode === "comparison" ? C.green : "transparent",
+                  color: viewMode === "comparison" ? "#000" : C.textDim,
+                  border: `1px solid ${viewMode === "comparison" ? C.green : C.border}`,
+                  fontWeight: 600, transition: "all .15s",
+                }}>
+                Vergleich
+              </div>
+            )}
           </div>
 
-          {/* Viz controls bar (tab-specific) */}
-          {hasAgg && tab === "network" && vizData.network && (
+          {/* Viz tab bar (only in ligand mode) */}
+          {viewMode === "ligand" && (
+            <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.border}`, background: C.surface, padding: "0 12px", flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 2, flex: 1 }}>
+                {vizTabs.map(t => {
+                  const disabled = !hasAgg || (activeLigand === 2 && !hasSecondAgg);
+                  return (
+                    <div key={t.id}
+                      onClick={() => !disabled && setTab(t.id)}
+                      style={{
+                        padding: "10px 14px", fontSize: 12, cursor: disabled ? "default" : "pointer",
+                        color: tab === t.id ? C.accent : C.textDim,
+                        borderBottom: `2px solid ${tab === t.id ? C.accent : "transparent"}`,
+                        fontWeight: tab === t.id ? 600 : 400,
+                        background: tab === t.id ? C.accentDim : "transparent",
+                        opacity: disabled ? 0.35 : 1,
+                        transition: "all .15s",
+                      }}>{t.label}</div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Viz controls bar (tab-specific, only in ligand mode) */}
+          {viewMode === "ligand" && hasAgg && tab === "network" && vizData[currentCacheKey] && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderBottom: `1px solid ${C.border}`, background: C.surface }}>
               <span style={{ fontSize: 11, color: C.textDim }}>Frame:</span>
-              <input type="range" min={0} max={(vizData.network.total_frames || 1) - 1}
+              <input type="range" min={0} max={(vizData[currentCacheKey].total_frames || 1) - 1}
                 value={networkFrame}
                 onChange={e => setNetworkFrame(Number(e.target.value))}
                 style={{ flex: 1, maxWidth: 300 }} />
               <span style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 40 }}>{networkFrame}</span>
-              <Btn small onClick={() => loadViz("network", { frame: networkFrame })}
+              <Btn small onClick={() => loadViz("network", { frame: networkFrame, ligand: activeLigand })}
                 disabled={loading.viz_network}>
                 {loading.viz_network ? <Spinner /> : "Laden"}
               </Btn>
-              {vizData.network.active_residues && (
+              {vizData[currentCacheKey].active_residues && (
                 <div style={{ fontSize: 10, color: C.textDim }}>
-                  Aktiv: {[...new Set(vizData.network.active_residues)].map((r, i) => (
+                  Aktiv: {[...new Set(vizData[currentCacheKey].active_residues)].map((r, i) => (
                     <span key={i} onClick={() => setHighlightResidue(r)}
                       style={{ color: highlightResidue === r ? C.pink : C.accent, cursor: "pointer", marginLeft: 4, fontWeight: 600 }}>{r}</span>
                   ))}
@@ -556,14 +617,14 @@ export default function App() {
             </div>
           )}
 
-          {hasAgg && tab === "circle" && vizData.circle && (
+          {viewMode === "ligand" && hasAgg && tab === "circle" && vizData[currentCacheKey] && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderBottom: `1px solid ${C.border}`, background: C.surface, flexWrap: "wrap" }}>
               <span style={{ fontSize: 11, color: C.textDim }}>Residuum:</span>
-              <div onClick={() => { setCircleResidue(null); loadViz("circle", {}); }}
+              <div onClick={() => { setCircleResidue(null); loadViz("circle", { ligand: activeLigand }); }}
                 style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: !circleResidue ? C.accentDim : "transparent", color: !circleResidue ? C.accent : C.textDim, border: `1px solid ${!circleResidue ? C.accent : C.border}` }}>Alle</div>
-              {vizData.circle.residues?.map(r => (
+              {vizData[currentCacheKey].residues?.map(r => (
                 <div key={r}
-                  onClick={() => { setCircleResidue(r); setHighlightResidue(r); loadViz("circle", { residue: r }); }}
+                  onClick={() => { setCircleResidue(r); setHighlightResidue(r); loadViz("circle", { residue: r, ligand: activeLigand }); }}
                   style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: circleResidue === r ? C.pinkDim : "transparent", color: circleResidue === r ? C.pink : C.textDim, border: `1px solid ${circleResidue === r ? C.pink : C.border}` }}>{r}</div>
               ))}
             </div>
@@ -576,15 +637,31 @@ export default function App() {
                 <div style={{ fontSize: 16, color: C.textDim, marginBottom: 12 }}>Daten laden und Aggregation ausfuehren</div>
                 <div style={{ fontSize: 12, color: C.textMuted }}>oder Testdaten generieren (links unter Pipeline)</div>
               </div>
-            ) : loading[`viz_${tab}`] ? (
+            ) : viewMode === "ligand" && activeLigand === 2 && !hasSecondAgg ? (
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 14, color: C.textDim }}>Aggregation fuer zweite Simulation ausfuehren</div>
+              </div>
+            ) : loading[viewMode === "comparison" ? "viz_comparison" : `viz_${tab}`] ? (
               <div style={{ textAlign: "center" }}>
                 <Spinner />
                 <div style={{ fontSize: 12, color: C.textDim, marginTop: 8 }}>Visualisierung wird berechnet...</div>
               </div>
-            ) : tab === "circle" && vizData.circle ? (
+            ) : viewMode === "comparison" ? (
+              vizData.comparison?.image ? (
+                <img src={`data:image/png;base64,${vizData.comparison.image}`}
+                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }}
+                  alt="comparison" />
+              ) : (
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 14, color: C.textDim }}>
+                    {!hasComparison ? "Vergleich zuerst ausfuehren (Pipeline-Bereich)" : "Visualisierung laden..."}
+                  </div>
+                </div>
+              )
+            ) : tab === "circle" && vizData[currentCacheKey] ? (
               // Circle: show grid of residue charts
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", alignItems: "flex-start", maxHeight: "100%", overflow: "auto" }}>
-                {Object.entries(vizData.circle.images || {}).map(([key, img]) => (
+                {Object.entries(vizData[currentCacheKey].images || {}).map(([key, img]) => (
                   <div key={key}
                     onClick={() => { if (key !== "_legend") { setHighlightResidue(key); } }}
                     style={{ cursor: key !== "_legend" ? "pointer" : "default", border: `2px solid ${highlightResidue === key ? C.pink : "transparent"}`, borderRadius: 8, overflow: "hidden" }}>
@@ -594,17 +671,13 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            ) : vizData[tab]?.image ? (
-              <img src={`data:image/png;base64,${vizData[tab].image}`}
+            ) : vizData[currentCacheKey]?.image ? (
+              <img src={`data:image/png;base64,${vizData[currentCacheKey].image}`}
                 style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }}
                 alt={tab} />
             ) : (
               <div style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 14, color: C.textDim }}>
-                  {tab === "comparison" && !hasComparison
-                    ? "Vergleich zuerst ausfuehren (Pipeline-Bereich)"
-                    : "Visualisierung laden..."}
-                </div>
+                <div style={{ fontSize: 14, color: C.textDim }}>Visualisierung laden...</div>
               </div>
             )}
           </div>

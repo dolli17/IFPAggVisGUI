@@ -42,21 +42,22 @@ export async function runComparison() {
   return request("/compare", { method: "POST" });
 }
 
-export async function getVizNetwork(frame = 0) {
-  return request(`/viz/network?frame=${frame}`);
+export async function getVizNetwork(frame = 0, ligand = 1) {
+  return request(`/viz/network?frame=${frame}&ligand=${ligand}`);
 }
 
-export async function getVizCircle(residue = null) {
-  const q = residue ? `?residue=${encodeURIComponent(residue)}` : "";
-  return request(`/viz/circle${q}`);
+export async function getVizCircle(residue = null, ligand = 1) {
+  const params = new URLSearchParams({ ligand });
+  if (residue) params.append("residue", residue);
+  return request(`/viz/circle?${params}`);
 }
 
-export async function getVizHeatmap() {
-  return request("/viz/heatmap");
+export async function getVizHeatmap(ligand = 1) {
+  return request(`/viz/heatmap?ligand=${ligand}`);
 }
 
-export async function getVizOccurrence() {
-  return request("/viz/occurrence");
+export async function getVizOccurrence(ligand = 1) {
+  return request(`/viz/occurrence?ligand=${ligand}`);
 }
 
 export async function getVizComparison() {

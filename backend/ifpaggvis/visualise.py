@@ -3,6 +3,7 @@ import matplotlib.markers as pltmarkers
 import matplotlib.transforms as mtransforms
 import numpy as np
 import matplotlib.patches as mpatches
+from matplotlib.collections import LineCollection
 import imageio.v3 as iio
 import networkx as nx
 from tqdm import tqdm
@@ -129,7 +130,11 @@ def plot_similarity_between_ligands(a, identical_ifps, similar_ifps,
     plt.hlines(y=5, xmin=0, xmax=max_ind_corrected, linewidth=3, color=blue2)
     
     
-    # Nested while loops to iterate over both ligands and generate possible 
+    # Helper: convert coordinate list to LineCollection segments
+    def _to_segments(data_points):
+        return [[(d[0][0], d[1][0]), (d[0][1], d[1][1])] for d in data_points]
+
+    # Nested loops to iterate over both ligands and generate possible
     # combinations
     i = 0
     while i < len(lig_names):
@@ -138,55 +143,64 @@ def plot_similarity_between_ligands(a, identical_ifps, similar_ifps,
         i2 = i
         while i2 < len(lig_names):
             lig2 = lig_names[i2]
-            
+
             # Check whether two different ligands are considered
             if i != i2:
-                # Determine coordinates of similar/identical IFPs and plot 
-                # connection between them
+                # Similar IFPs between ligands
                 data_points = determine_coordinates_for_plotting(
                     similar_ifps[lig1+"_"+lig2], indices_obs, i, i2, 2, 3)
-                for data in data_points:
-                    ax.plot(data[0], data[1], color=red, linestyle="-",
-                            linewidth=0.1)               
+                if data_points:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_points),
+                        colors=red, linestyle="-", linewidth=0.1))
+                # Identical IFPs between ligands
                 data_points_ident = determine_coordinates_for_plotting(
                     identical_ifps[lig1+"_"+lig2], indices_obs, i, i2, 2, 3)
-                for data in data_points_ident:
-                    ax.plot(data[0], data[1], color=cyan, linestyle="-",
-                            linewidth=0.3)
+                if data_points_ident:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_points_ident),
+                        colors=cyan, linestyle="-", linewidth=0.3))
 
             # Check whether ligand 1 is currently considered
             if ((i == 0) and
                 (i2 == 0)):
-                # Determine coordinates of similar/identical IFPs and plot 
-                # connection between them
+                # Similar IFPs within ligand 1
                 data_lig1_sim = determine_coordinates_for_plotting(
-                    similar_ifps[lig1+"_"+lig2], indices_obs,i, i2,1,2)
-                for data in data_lig1_sim:
-                    ax.plot(data[0], data[1], color=blue1, linestyle="-",
-                            linewidth=0.1, alpha=0.3)                
+                    similar_ifps[lig1+"_"+lig2], indices_obs, i, i2, 1, 2)
+                if data_lig1_sim:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_lig1_sim),
+                        colors=blue1, linestyle="-", linewidth=0.1, alpha=0.3))
+                # Identical IFPs within ligand 1
                 data_lig1_ident = determine_coordinates_for_plotting(
                     identical_ifps[lig1+"_"+lig2], indices_obs, i, i2, 0, 1)
-                for data in data_lig1_ident:
-                    ax.plot(data[0], data[1], color=blue1, linestyle="-",
-                            linewidth=0.1)
+                if data_lig1_ident:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_lig1_ident),
+                        colors=blue1, linestyle="-", linewidth=0.1))
 
             # Check whether ligand 2 is currently considered
             if ((i == i2) and
                 (i != 0)):
-                # Determine coordinates of similar/identical IFPs and plot 
-                # connection between them
+                # Similar IFPs within ligand 2
                 data_lig2_sim = determine_coordinates_for_plotting(
                     similar_ifps[lig1+"_"+lig2], indices_obs, i, i2, 3, 4)
-                for data in data_lig2_sim:
-                    ax.plot(data[0], data[1], color=blue2, linestyle="-",
-                            linewidth=0.1, alpha=0.3)               
+                if data_lig2_sim:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_lig2_sim),
+                        colors=blue2, linestyle="-", linewidth=0.1, alpha=0.3))
+                # Identical IFPs within ligand 2
                 data_lig2_ident = determine_coordinates_for_plotting(
                     identical_ifps[lig1+"_"+lig2], indices_obs, i, i2, 4, 5)
-                for data in data_lig2_ident:
-                    ax.plot(data[0], data[1], color=blue2, linestyle="-",
-                            linewidth=0.1) 
+                if data_lig2_ident:
+                    ax.add_collection(LineCollection(
+                        _to_segments(data_lig2_ident),
+                        colors=blue2, linestyle="-", linewidth=0.1))
             i2+=1
         i+=1
+
+    # LineCollections don't auto-update axis limits, set them manually
+    ax.autoscale_view()
         
     plt.tight_layout()        
     
