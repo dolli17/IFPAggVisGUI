@@ -6,10 +6,14 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import os
+import tempfile
+
 from pipeline import (
     IFPSession, load_csv, run_aggregation, render_network, render_circle_chart,
     render_distance_matrix, render_occurrence, run_comparison,
-    render_comparison, load_pdb, get_session_info, update_parameters,
+    render_comparison, load_pdb, load_trajectory, get_frame_pdb,
+    get_session_info, update_parameters,
 )
 
 app = FastAPI(title="IFPAggVis GUI Backend", version="0.1.0")
@@ -65,6 +69,49 @@ def api_get_pdb():
     if session.pdb_content is None:
         raise HTTPException(status_code=404, detail="No PDB file loaded")
     return JSONResponse(content={"pdb": session.pdb_content, "filename": session.pdb_path})
+
+
+@app.post("/api/upload-trajectory")
+async def api_upload_trajectory(
+    gro_file: UploadFile = File(...),
+    xtc_files: list[UploadFile] = File(...),
+):
+    """Upload GRO topology + one or more XTC trajectories for frame-synced 3D viewing.
+
+    Multiple XTC files are concatenated in upload order by MDAnalysis.
+    """
+    try:
+        # Save uploaded files to temp dir (MDAnalysis needs file paths)
+        tmp_dir = tempfile.mkdtemp(prefix="ifpaggvis_traj_")
+        gro_path = os.path.join(tmp_dir, gro_file.filename)
+
+        with open(gro_path, "wb") as f:
+            f.write(await gro_file.read())
+
+        xtc_paths = []
+        for xtc_file in xtc_files:
+            xtc_path = os.path.join(tmp_dir, xtc_file.filename)
+            with open(xtc_path, "wb") as f:
+                f.write(await xtc_file.read())
+            xtc_paths.append(xtc_path)
+
+        # Sort by filename to ensure consistent replicate order
+        xtc_paths.sort()
+
+        result = load_trajectory(session, gro_path, xtc_paths)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/trajectory-frame")
+def api_trajectory_frame(frame: int = 0):
+    """Return a single trajectory frame as PDB string."""
+    try:
+        pdb_str = get_frame_pdb(session, frame)
+        return JSONResponse(content={"pdb": pdb_str, "frame": frame})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

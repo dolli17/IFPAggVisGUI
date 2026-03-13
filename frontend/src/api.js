@@ -31,6 +31,19 @@ export async function getPDB() {
   return request("/pdb");
 }
 
+export async function uploadTrajectory(groFile, xtcFiles) {
+  const form = new FormData();
+  form.append("gro_file", groFile);
+  for (const xtcFile of xtcFiles) {
+    form.append("xtc_files", xtcFile);
+  }
+  return request("/upload-trajectory", { method: "POST", body: form });
+}
+
+export async function getTrajectoryFrame(frame) {
+  return request(`/trajectory-frame?frame=${frame}`);
+}
+
 export async function runAggregation(isSecond = false, x1 = null, x2 = null) {
   const params = new URLSearchParams({ is_second: isSecond });
   if (x1 !== null) params.append("x1", x1);

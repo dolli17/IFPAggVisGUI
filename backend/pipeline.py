@@ -42,6 +42,8 @@ class IFPSession:
         self.ligand_name_1 = "Ligand_1"
         self.frame_count = 0
         self.ifp_count = 0
+        self.frame_map = None          # list of dicts: csv_start, csv_end, csv_mid per aggregated IFP
+        self.x1_offset = 0             # frames dropped at start by x1 rolling window
 
         # ── Second simulation ──
         self.flat_df_2 = None
@@ -60,6 +62,8 @@ class IFPSession:
         self.ligand_name_2 = "Ligand_2"
         self.frame_count_2 = 0
         self.ifp_count_2 = 0
+        self.frame_map_2 = None
+        self.x1_offset_2 = 0
 
         # ── Comparison state ──
         self.merged_df = None
@@ -88,6 +92,12 @@ class IFPSession:
         # ── 3D viewer ──
         self.pdb_content = None
         self.pdb_path = None
+
+        # ── Trajectory (GRO + multiple XTCs) ──
+        self.trajectory_universe = None   # MDAnalysis Universe
+        self.trajectory_n_frames = 0
+        self.trajectory_gro_path = None
+        self.trajectory_xtc_paths = []    # list of XTC file paths
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -224,9 +234,12 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     df_processed = df.copy()
 
     # Step 1: Sliding window (x1 filter) — centered rolling mean
+    x1_offset = 0
     if x1_val > 0:
         window_size = max(1, int((len(df_processed) / 100) * x1_val))
         df_processed = df_processed.rolling(window=window_size, center=True).mean()
+        # Number of NaN rows dropped at the start (centered window)
+        x1_offset = (window_size - 1) // 2
         # Drop NaN rows from centered window edges
         df_processed = df_processed.dropna().reset_index(drop=True)
 
@@ -243,9 +256,27 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     df_processed["diff_to_prev"] = list_values
     agg_df = aggregate.summarise_df(df_processed, "diff_to_prev")
 
+    # Step 4: Build frame map — maps each aggregated IFP back to CSV frame range
+    # agg_df.index contains the post-x1 frame indices from summarise_df
+    agg_indices = agg_df.index.tolist()
+    occ_values = agg_df["occurence"].values
+    frame_map = []
+    for i, (post_x1_idx, occ) in enumerate(zip(agg_indices, occ_values)):
+        csv_start = int(post_x1_idx + x1_offset)
+        csv_end = int(post_x1_idx + x1_offset + occ - 1)
+        csv_mid = int(csv_start + occ // 2)
+        frame_map.append({
+            "csv_start": csv_start,
+            "csv_end": csv_end,
+            "csv_mid": csv_mid,
+            "occurence": int(occ),
+        })
+
     if is_second:
         session.aggregated_df_2 = agg_df
         session.ifp_count_2 = len(agg_df)
+        session.frame_map_2 = frame_map
+        session.x1_offset_2 = x1_offset
         # Reset downstream for second sim
         session.distances_2 = None
         session.node_positions_2 = None
@@ -259,6 +290,8 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     else:
         session.aggregated_df = agg_df
         session.ifp_count = len(agg_df)
+        session.frame_map = frame_map
+        session.x1_offset = x1_offset
         # Reset downstream
         session.distances = None
         session.node_positions = None
@@ -272,6 +305,7 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
         "reduction_ratio": round(1 - len(agg_df) / len(df), 4),
         "x1_filter": x1_val,
         "x2_filter": x2_val,
+        "x1_offset": x1_offset,
         "interactions_remaining": len(nonzero_cols),
     }
 
@@ -460,6 +494,12 @@ def render_network(session: IFPSession, frame_index: int = 0, ligand: int = 1) -
     plt.tight_layout()
     img = _fig_to_base64(fig)
 
+    # Frame mapping for 3D viewer sync
+    frame_map = getattr(session, "frame_map_2" if ligand == 2 else "frame_map")
+    mapped_frame = None
+    if frame_map and 0 <= frame_index < len(frame_map):
+        mapped_frame = frame_map[frame_index]
+
     return {
         "image": img,
         "frame_index": frame_index,
@@ -467,6 +507,7 @@ def render_network(session: IFPSession, frame_index: int = 0, ligand: int = 1) -
         "occurrence": int(occurence_values[frame_index]),
         "active_residues": [label_dict.get(n, str(n))
                            for n in (node_list_all or [])],
+        "mapped_frame": mapped_frame,
     }
 
 
@@ -751,6 +792,58 @@ def load_pdb(session: IFPSession, file_bytes: bytes, filename: str) -> dict:
     return {"filename": filename, "atom_count": session.pdb_content.count("\nATOM")}
 
 
+def load_trajectory(session: IFPSession, gro_path: str, xtc_paths: list) -> dict:
+    """Load a GRO topology + multiple XTC trajectories via MDAnalysis.
+
+    MDAnalysis concatenates multiple XTC files in order, so frame indices
+    span across all replicates sequentially.
+    """
+    import MDAnalysis as mda
+
+    u = mda.Universe(gro_path, xtc_paths)
+    session.trajectory_universe = u
+    session.trajectory_n_frames = len(u.trajectory)
+    session.trajectory_gro_path = gro_path
+    session.trajectory_xtc_paths = xtc_paths
+
+    # Also provide the first frame as PDB for immediate viewing
+    session.pdb_content = _frame_to_pdb(u, 0)
+    session.pdb_path = os.path.basename(gro_path)
+
+    return {
+        "n_frames": session.trajectory_n_frames,
+        "n_atoms": len(u.atoms),
+        "gro": os.path.basename(gro_path),
+        "xtc_files": [os.path.basename(p) for p in xtc_paths],
+        "xtc_count": len(xtc_paths),
+    }
+
+
+def get_frame_pdb(session: IFPSession, frame: int) -> str:
+    """Extract a single frame from the loaded trajectory as PDB string."""
+    if session.trajectory_universe is None:
+        raise ValueError("No trajectory loaded")
+    n = session.trajectory_n_frames
+    if frame < 0 or frame >= n:
+        raise ValueError(f"Frame {frame} out of range [0, {n - 1}]")
+    return _frame_to_pdb(session.trajectory_universe, frame)
+
+
+def _frame_to_pdb(universe, frame: int) -> str:
+    """Convert a single MDAnalysis frame to PDB string."""
+    universe.trajectory[frame]
+    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False, mode="w") as tmp:
+        tmp_path = tmp.name
+    try:
+        from MDAnalysis.coordinates.PDB import PDBWriter
+        with PDBWriter(tmp_path, n_atoms=len(universe.atoms)) as w:
+            w.write(universe.atoms)
+        with open(tmp_path, "r") as f:
+            return f.read()
+    finally:
+        os.unlink(tmp_path)
+
+
 def get_residues(session: IFPSession) -> list:
     """Return list of unique residues from loaded data."""
     if session.interactions is None:
@@ -774,6 +867,8 @@ def get_session_info(session: IFPSession) -> dict:
         "has_second_aggregation": session.aggregated_df_2 is not None,
         "has_comparison": session.identical_ifps is not None,
         "has_pdb": session.pdb_content is not None,
+        "has_trajectory": session.trajectory_universe is not None,
+        "trajectory_n_frames": session.trajectory_n_frames,
         "ligand_name_1": session.ligand_name_1,
         "ligand_name_2": session.ligand_name_2,
         "frame_count": session.frame_count,

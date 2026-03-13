@@ -146,6 +146,8 @@ export default function App() {
   const [circleResidue, setCircleResidue] = useState(null);
   const [x1Filter, setX1Filter] = useState(1.0);
   const [x2Filter, setX2Filter] = useState(0.2);
+  const [viewerWidth, setViewerWidth] = useState(280);
+  const isDragging = useRef(false);
 
   // ── Visualization data ──
   const [vizData, setVizData] = useState({});
@@ -163,6 +165,28 @@ export default function App() {
     cmap_name: "viridis",
     dpi: 150,
   });
+
+  // ── 3D viewer resize drag ──
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      if (!isDragging.current) return;
+      const newWidth = window.innerWidth - e.clientX;
+      setViewerWidth(Math.max(150, Math.min(newWidth, 800)));
+    };
+    const onMouseUp = () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
 
   // ── Load session on mount ──
   useEffect(() => {
@@ -218,6 +242,38 @@ export default function App() {
     e.target.value = "";
   };
 
+  // ── Trajectory upload (GRO + XTC) ──
+  const trajGroRef = useRef(null);
+  const trajXtcRef = useRef(null);
+
+  const handleTrajectoryUpload = async () => {
+    const groFile = trajGroRef.current?.files?.[0];
+    const xtcFiles = trajXtcRef.current?.files;
+    if (!groFile || !xtcFiles?.length) return;
+    await withLoading("trajectory", async () => {
+      await api.uploadTrajectory(groFile, Array.from(xtcFiles));
+      // Load first frame for immediate viewing
+      const data = await api.getPDB();
+      setPdbData(data.pdb);
+    });
+    refreshSession();
+  };
+
+  // ── Sync 3D viewer with network frame ──
+  const lastLoadedFrame = useRef(-1);
+
+  const loadTrajectoryFrame = useCallback(async (frame) => {
+    if (!session?.has_trajectory) return;
+    if (frame === lastLoadedFrame.current) return;
+    lastLoadedFrame.current = frame;
+    try {
+      const data = await api.getTrajectoryFrame(frame);
+      setPdbData(data.pdb);
+    } catch (e) {
+      console.error("Failed to load trajectory frame:", e);
+    }
+  }, [session?.has_trajectory]);
+
   // ── Pipeline actions ──
   const handleAggregate = async (isSecond = false) => {
     await withLoading("aggregate", () => api.runAggregation(isSecond, x1Filter, x2Filter));
@@ -242,7 +298,7 @@ export default function App() {
     const lig = opts.ligand || 1;
     const cacheKey = vizTab === "comparison" ? "comparison" : `${vizTab}_${lig}`;
     const loadingKey = `viz_${vizTab}`;
-    await withLoading(loadingKey, async () => {
+    return await withLoading(loadingKey, async () => {
       let data;
       switch (vizTab) {
         case "network":
@@ -387,15 +443,49 @@ export default function App() {
               )}
 
               <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
-              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>3D-Struktur (PDB)</div>
+              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>3D-Struktur</div>
+
+              {/* Trajectory upload (GRO + XTC) */}
+              <div style={{ marginBottom: 4 }}>
+                <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
+                  <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
+                    {trajGroRef.current?.files?.[0] ? trajGroRef.current.files[0].name : "GRO laden"}
+                  </div>
+                  <input ref={trajGroRef} type="file" accept=".gro" onChange={() => {/* trigger re-render */ setError(null);}}
+                    style={{ display: "none" }} />
+                </label>
+                <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
+                  <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
+                    {trajXtcRef.current?.files?.length
+                      ? `${trajXtcRef.current.files.length} XTC Datei${trajXtcRef.current.files.length > 1 ? "en" : ""}`
+                      : "XTC laden (mehrere moeglich)"}
+                  </div>
+                  <input ref={trajXtcRef} type="file" accept=".xtc" multiple onChange={() => setError(null)}
+                    style={{ display: "none" }} />
+                </label>
+                <Btn small onClick={handleTrajectoryUpload}
+                  disabled={loading.trajectory}
+                  style={{ width: "100%", marginBottom: 4 }}>
+                  {loading.trajectory ? <><Spinner /> Laden...</> : "Trajektorie hochladen"}
+                </Btn>
+              </div>
+
+              {session?.has_trajectory && (
+                <div style={{ fontSize: 10, color: C.green }}>
+                  Trajektorie geladen ({session.trajectory_n_frames} Frames)
+                </div>
+              )}
+
+              {/* PDB fallback */}
+              <div style={{ height: 1, background: C.border, margin: "6px 0" }} />
               <label style={{ display: "block", marginBottom: 4, cursor: "pointer" }}>
-                <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
-                  {hasPdb ? "Andere PDB laden" : "PDB laden"}
+                <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 10, fontWeight: 600, textAlign: "center" }}>
+                  {hasPdb && !session?.has_trajectory ? "Andere PDB laden" : "Oder: PDB laden"}
                 </div>
                 <input type="file" accept=".pdb" onChange={handlePDBUpload}
                   style={{ display: "none" }} />
               </label>
-              {hasPdb && <div style={{ fontSize: 10, color: C.green }}>PDB geladen</div>}
+              {hasPdb && !session?.has_trajectory && <div style={{ fontSize: 10, color: C.green }}>PDB geladen</div>}
             </div>
           )}
 
@@ -595,20 +685,36 @@ export default function App() {
 
           {/* Viz controls bar (tab-specific, only in ligand mode) */}
           {viewMode === "ligand" && hasAgg && tab === "network" && vizData[currentCacheKey] && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", borderBottom: `1px solid ${C.border}`, background: C.surface }}>
-              <span style={{ fontSize: 11, color: C.textDim }}>Frame:</span>
-              <input type="range" min={0} max={(vizData[currentCacheKey].total_frames || 1) - 1}
-                value={networkFrame}
-                onChange={e => setNetworkFrame(Number(e.target.value))}
-                style={{ flex: 1, maxWidth: 300 }} />
-              <span style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 40 }}>{networkFrame}</span>
-              <Btn small onClick={() => loadViz("network", { frame: networkFrame, ligand: activeLigand })}
-                disabled={loading.viz_network}>
-                {loading.viz_network ? <Spinner /> : "Laden"}
-              </Btn>
+            <div style={{ borderBottom: `1px solid ${C.border}`, background: C.surface }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
+                <span style={{ fontSize: 11, color: C.textDim, flexShrink: 0 }}>Frame:</span>
+                <input type="range" min={0} max={(vizData[currentCacheKey].total_frames || 1) - 1}
+                  value={networkFrame}
+                  onChange={e => setNetworkFrame(Number(e.target.value))}
+                  style={{ flex: 1 }} />
+                <span style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 40, flexShrink: 0 }}>{networkFrame}</span>
+                <Btn small onClick={async () => {
+                  const result = await loadViz("network", { frame: networkFrame, ligand: activeLigand });
+                  // Use mapped CSV mid-frame for 3D viewer sync
+                  if (result?.mapped_frame) {
+                    loadTrajectoryFrame(result.mapped_frame.csv_mid);
+                  }
+                }}
+                  disabled={loading.viz_network}>
+                  {loading.viz_network ? <Spinner /> : "Laden"}
+                </Btn>
+              </div>
+              {vizData[currentCacheKey].mapped_frame && (
+                <div style={{ padding: "2px 16px 4px", fontSize: 10, color: C.textMuted, display: "flex", gap: 12 }}>
+                  <span>CSV-Frames: {vizData[currentCacheKey].mapped_frame.csv_start}–{vizData[currentCacheKey].mapped_frame.csv_end}</span>
+                  <span>Mitte: {vizData[currentCacheKey].mapped_frame.csv_mid}</span>
+                  <span>({vizData[currentCacheKey].mapped_frame.occurence}x)</span>
+                </div>
+              )}
               {vizData[currentCacheKey].active_residues && (
-                <div style={{ fontSize: 10, color: C.textDim }}>
-                  Aktiv: {[...new Set(vizData[currentCacheKey].active_residues)].map((r, i) => (
+                <div style={{ padding: "0 16px 8px", fontSize: 10, color: C.textDim, lineHeight: 1.8, flexWrap: "wrap", display: "flex", gap: 2, alignItems: "center" }}>
+                  <span>Aktiv:</span>
+                  {[...new Set(vizData[currentCacheKey].active_residues)].map((r, i) => (
                     <span key={i} onClick={() => setHighlightResidue(r)}
                       style={{ color: highlightResidue === r ? C.pink : C.accent, cursor: "pointer", marginLeft: 4, fontWeight: 600 }}>{r}</span>
                   ))}
@@ -683,8 +789,23 @@ export default function App() {
           </div>
         </div>
 
+        {/* ════════ RESIZE HANDLE ════════ */}
+        <div
+          onMouseDown={() => {
+            isDragging.current = true;
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
+          }}
+          style={{
+            width: 5, cursor: "col-resize", background: C.border,
+            flexShrink: 0, transition: "background .15s",
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = C.accent}
+          onMouseLeave={e => { if (!isDragging.current) e.currentTarget.style.background = C.border; }}
+        />
+
         {/* ════════ RIGHT: 3D Viewer ════════ */}
-        <div style={{ width: 280, borderLeft: `1px solid ${C.border}`, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ width: viewerWidth, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>3D Viewer</span>
             {highlightResidue && (
@@ -704,7 +825,11 @@ export default function App() {
             )}
           </div>
           <div style={{ padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 10, color: C.textDim }}>
-            Residuum im Plot anklicken → 3D-Hervorhebung
+            {session?.has_trajectory && lastLoadedFrame.current >= 0
+              ? `Trajektorie Frame ${lastLoadedFrame.current} / ${session.trajectory_n_frames - 1}`
+              : hasPdb
+                ? "Residuum im Plot anklicken → 3D-Hervorhebung"
+                : "PDB/Trajektorie laden im Daten-Bereich"}
           </div>
         </div>
       </div>
