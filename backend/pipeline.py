@@ -89,15 +89,21 @@ class IFPSession:
         self.scale_axis = 20
         self.cmap_name = "viridis"
 
-        # ── 3D viewer ──
+        # ── 3D viewer / Trajectory — Ligand 1 ──
         self.pdb_content = None
         self.pdb_path = None
-
-        # ── Trajectory (GRO + multiple XTCs) ──
         self.trajectory_universe = None   # MDAnalysis Universe
         self.trajectory_n_frames = 0
         self.trajectory_gro_path = None
         self.trajectory_xtc_paths = []    # list of XTC file paths
+
+        # ── 3D viewer / Trajectory — Ligand 2 ──
+        self.pdb_content_2 = None
+        self.pdb_path_2 = None
+        self.trajectory_universe_2 = None
+        self.trajectory_n_frames_2 = 0
+        self.trajectory_gro_path_2 = None
+        self.trajectory_xtc_paths_2 = []
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -785,14 +791,22 @@ def render_comparison(session: IFPSession) -> dict:
     return {"image": img}
 
 
-def load_pdb(session: IFPSession, file_bytes: bytes, filename: str) -> dict:
+def load_pdb(session: IFPSession, file_bytes: bytes, filename: str,
+             ligand: int = 1) -> dict:
     """Load a PDB file for the 3D viewer."""
-    session.pdb_content = file_bytes.decode("utf-8", errors="replace")
-    session.pdb_path = filename
-    return {"filename": filename, "atom_count": session.pdb_content.count("\nATOM")}
+    content = file_bytes.decode("utf-8", errors="replace")
+    if ligand == 2:
+        session.pdb_content_2 = content
+        session.pdb_path_2 = filename
+    else:
+        session.pdb_content = content
+        session.pdb_path = filename
+    return {"filename": filename, "ligand": ligand,
+            "atom_count": content.count("\nATOM")}
 
 
-def load_trajectory(session: IFPSession, gro_path: str, xtc_paths: list) -> dict:
+def load_trajectory(session: IFPSession, gro_path: str, xtc_paths: list,
+                    ligand: int = 1) -> dict:
     """Load a GRO topology + multiple XTC trajectories via MDAnalysis.
 
     MDAnalysis concatenates multiple XTC files in order, so frame indices
@@ -801,32 +815,42 @@ def load_trajectory(session: IFPSession, gro_path: str, xtc_paths: list) -> dict
     import MDAnalysis as mda
 
     u = mda.Universe(gro_path, xtc_paths)
-    session.trajectory_universe = u
-    session.trajectory_n_frames = len(u.trajectory)
-    session.trajectory_gro_path = gro_path
-    session.trajectory_xtc_paths = xtc_paths
+    pdb_first = _frame_to_pdb(u, 0)
 
-    # Also provide the first frame as PDB for immediate viewing
-    session.pdb_content = _frame_to_pdb(u, 0)
-    session.pdb_path = os.path.basename(gro_path)
+    if ligand == 2:
+        session.trajectory_universe_2 = u
+        session.trajectory_n_frames_2 = len(u.trajectory)
+        session.trajectory_gro_path_2 = gro_path
+        session.trajectory_xtc_paths_2 = xtc_paths
+        session.pdb_content_2 = pdb_first
+        session.pdb_path_2 = os.path.basename(gro_path)
+    else:
+        session.trajectory_universe = u
+        session.trajectory_n_frames = len(u.trajectory)
+        session.trajectory_gro_path = gro_path
+        session.trajectory_xtc_paths = xtc_paths
+        session.pdb_content = pdb_first
+        session.pdb_path = os.path.basename(gro_path)
 
     return {
-        "n_frames": session.trajectory_n_frames,
+        "n_frames": len(u.trajectory),
         "n_atoms": len(u.atoms),
+        "ligand": ligand,
         "gro": os.path.basename(gro_path),
         "xtc_files": [os.path.basename(p) for p in xtc_paths],
         "xtc_count": len(xtc_paths),
     }
 
 
-def get_frame_pdb(session: IFPSession, frame: int) -> str:
+def get_frame_pdb(session: IFPSession, frame: int, ligand: int = 1) -> str:
     """Extract a single frame from the loaded trajectory as PDB string."""
-    if session.trajectory_universe is None:
-        raise ValueError("No trajectory loaded")
-    n = session.trajectory_n_frames
-    if frame < 0 or frame >= n:
-        raise ValueError(f"Frame {frame} out of range [0, {n - 1}]")
-    return _frame_to_pdb(session.trajectory_universe, frame)
+    universe = session.trajectory_universe_2 if ligand == 2 else session.trajectory_universe
+    n_frames = session.trajectory_n_frames_2 if ligand == 2 else session.trajectory_n_frames
+    if universe is None:
+        raise ValueError(f"No trajectory loaded for ligand {ligand}")
+    if frame < 0 or frame >= n_frames:
+        raise ValueError(f"Frame {frame} out of range [0, {n_frames - 1}]")
+    return _frame_to_pdb(universe, frame)
 
 
 def _frame_to_pdb(universe, frame: int) -> str:
@@ -867,8 +891,11 @@ def get_session_info(session: IFPSession) -> dict:
         "has_second_aggregation": session.aggregated_df_2 is not None,
         "has_comparison": session.identical_ifps is not None,
         "has_pdb": session.pdb_content is not None,
+        "has_pdb_2": session.pdb_content_2 is not None,
         "has_trajectory": session.trajectory_universe is not None,
+        "has_trajectory_2": session.trajectory_universe_2 is not None,
         "trajectory_n_frames": session.trajectory_n_frames,
+        "trajectory_n_frames_2": session.trajectory_n_frames_2,
         "ligand_name_1": session.ligand_name_1,
         "ligand_name_2": session.ligand_name_2,
         "frame_count": session.frame_count,

@@ -231,13 +231,15 @@ export default function App() {
     e.target.value = "";
   };
 
-  const handlePDBUpload = async (e) => {
+  const handlePDBUpload = async (e, ligand = 1) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    await withLoading("pdb", () => api.uploadPDB(file));
-    // Load PDB content for viewer
-    const data = await api.getPDB();
-    setPdbData(data.pdb);
+    await withLoading("pdb", () => api.uploadPDB(file, ligand));
+    // Load PDB content for viewer if this is the active ligand
+    if (ligand === activeLigand) {
+      const data = await api.getPDB(ligand);
+      setPdbData(data.pdb);
+    }
     refreshSession();
     e.target.value = "";
   };
@@ -245,34 +247,60 @@ export default function App() {
   // ── Trajectory upload (GRO + XTC) ──
   const trajGroRef = useRef(null);
   const trajXtcRef = useRef(null);
+  const trajGroRef2 = useRef(null);
+  const trajXtcRef2 = useRef(null);
 
-  const handleTrajectoryUpload = async () => {
-    const groFile = trajGroRef.current?.files?.[0];
-    const xtcFiles = trajXtcRef.current?.files;
+  const handleTrajectoryUpload = async (ligand = 1) => {
+    const groRef = ligand === 2 ? trajGroRef2 : trajGroRef;
+    const xtcRef = ligand === 2 ? trajXtcRef2 : trajXtcRef;
+    const groFile = groRef.current?.files?.[0];
+    const xtcFiles = xtcRef.current?.files;
     if (!groFile || !xtcFiles?.length) return;
     await withLoading("trajectory", async () => {
-      await api.uploadTrajectory(groFile, Array.from(xtcFiles));
-      // Load first frame for immediate viewing
-      const data = await api.getPDB();
-      setPdbData(data.pdb);
+      await api.uploadTrajectory(groFile, Array.from(xtcFiles), ligand);
+      // Load first frame for viewer if this is the active ligand
+      if (ligand === activeLigand) {
+        const data = await api.getPDB(ligand);
+        setPdbData(data.pdb);
+      }
     });
     refreshSession();
   };
 
   // ── Sync 3D viewer with network frame ──
+  const [currentTrajectoryFrame, setCurrentTrajectoryFrame] = useState(-1);
   const lastLoadedFrame = useRef(-1);
 
+  const hasActiveTrajectory = activeLigand === 2 ? session?.has_trajectory_2 : session?.has_trajectory;
+  const activeTrajectoryNFrames = activeLigand === 2 ? session?.trajectory_n_frames_2 : session?.trajectory_n_frames;
+  const hasActivePdb = activeLigand === 2 ? session?.has_pdb_2 : session?.has_pdb;
+
   const loadTrajectoryFrame = useCallback(async (frame) => {
-    if (!session?.has_trajectory) return;
+    if (!hasActiveTrajectory) return;
     if (frame === lastLoadedFrame.current) return;
     lastLoadedFrame.current = frame;
+    setCurrentTrajectoryFrame(frame);
     try {
-      const data = await api.getTrajectoryFrame(frame);
+      const data = await api.getTrajectoryFrame(frame, activeLigand);
       setPdbData(data.pdb);
     } catch (e) {
       console.error("Failed to load trajectory frame:", e);
     }
-  }, [session?.has_trajectory]);
+  }, [hasActiveTrajectory, activeLigand]);
+
+  // ── Switch 3D viewer when active ligand changes ──
+  useEffect(() => {
+    lastLoadedFrame.current = -1;
+    setCurrentTrajectoryFrame(-1);
+    const lig = activeLigand;
+    const hasTraj = lig === 2 ? session?.has_trajectory_2 : session?.has_trajectory;
+    const hasPdbLig = lig === 2 ? session?.has_pdb_2 : session?.has_pdb;
+    if (hasTraj || hasPdbLig) {
+      api.getPDB(lig).then(data => setPdbData(data.pdb)).catch(() => setPdbData(null));
+    } else {
+      setPdbData(null);
+    }
+  }, [activeLigand, session?.has_trajectory, session?.has_trajectory_2, session?.has_pdb, session?.has_pdb_2]);
 
   // ── Pipeline actions ──
   const handleAggregate = async (isSecond = false) => {
@@ -443,15 +471,15 @@ export default function App() {
               )}
 
               <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
-              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>3D-Struktur</div>
+              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>3D-Struktur — Simulation 1</div>
 
-              {/* Trajectory upload (GRO + XTC) */}
+              {/* Trajectory upload Ligand 1 (GRO + XTC) */}
               <div style={{ marginBottom: 4 }}>
                 <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
                   <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
                     {trajGroRef.current?.files?.[0] ? trajGroRef.current.files[0].name : "GRO laden"}
                   </div>
-                  <input ref={trajGroRef} type="file" accept=".gro" onChange={() => {/* trigger re-render */ setError(null);}}
+                  <input ref={trajGroRef} type="file" accept=".gro" onChange={() => setError(null)}
                     style={{ display: "none" }} />
                 </label>
                 <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
@@ -463,29 +491,68 @@ export default function App() {
                   <input ref={trajXtcRef} type="file" accept=".xtc" multiple onChange={() => setError(null)}
                     style={{ display: "none" }} />
                 </label>
-                <Btn small onClick={handleTrajectoryUpload}
+                <Btn small onClick={() => handleTrajectoryUpload(1)}
                   disabled={loading.trajectory}
                   style={{ width: "100%", marginBottom: 4 }}>
                   {loading.trajectory ? <><Spinner /> Laden...</> : "Trajektorie hochladen"}
                 </Btn>
               </div>
-
               {session?.has_trajectory && (
-                <div style={{ fontSize: 10, color: C.green }}>
-                  Trajektorie geladen ({session.trajectory_n_frames} Frames)
+                <div style={{ fontSize: 10, color: C.green, marginBottom: 4 }}>
+                  Sim 1 Trajektorie geladen ({session.trajectory_n_frames} Frames)
                 </div>
               )}
-
-              {/* PDB fallback */}
-              <div style={{ height: 1, background: C.border, margin: "6px 0" }} />
+              {/* PDB fallback Ligand 1 */}
               <label style={{ display: "block", marginBottom: 4, cursor: "pointer" }}>
                 <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 10, fontWeight: 600, textAlign: "center" }}>
-                  {hasPdb && !session?.has_trajectory ? "Andere PDB laden" : "Oder: PDB laden"}
+                  Oder: PDB laden (Sim 1)
                 </div>
-                <input type="file" accept=".pdb" onChange={handlePDBUpload}
+                <input type="file" accept=".pdb" onChange={e => handlePDBUpload(e, 1)}
                   style={{ display: "none" }} />
               </label>
-              {hasPdb && !session?.has_trajectory && <div style={{ fontSize: 10, color: C.green }}>PDB geladen</div>}
+
+              {/* Trajectory upload Ligand 2 */}
+              {hasSecond && (
+                <>
+                  <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 4 }}>3D-Struktur — Simulation 2</div>
+                  <div style={{ marginBottom: 4 }}>
+                    <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
+                      <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
+                        {trajGroRef2.current?.files?.[0] ? trajGroRef2.current.files[0].name : "GRO laden"}
+                      </div>
+                      <input ref={trajGroRef2} type="file" accept=".gro" onChange={() => setError(null)}
+                        style={{ display: "none" }} />
+                    </label>
+                    <label style={{ display: "block", marginBottom: 3, cursor: "pointer" }}>
+                      <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textDim, fontSize: 11, fontWeight: 600, textAlign: "center" }}>
+                        {trajXtcRef2.current?.files?.length
+                          ? `${trajXtcRef2.current.files.length} XTC Datei${trajXtcRef2.current.files.length > 1 ? "en" : ""}`
+                          : "XTC laden (mehrere moeglich)"}
+                      </div>
+                      <input ref={trajXtcRef2} type="file" accept=".xtc" multiple onChange={() => setError(null)}
+                        style={{ display: "none" }} />
+                    </label>
+                    <Btn small onClick={() => handleTrajectoryUpload(2)}
+                      disabled={loading.trajectory}
+                      style={{ width: "100%", marginBottom: 4 }}>
+                      {loading.trajectory ? <><Spinner /> Laden...</> : "Trajektorie hochladen"}
+                    </Btn>
+                  </div>
+                  {session?.has_trajectory_2 && (
+                    <div style={{ fontSize: 10, color: C.green, marginBottom: 4 }}>
+                      Sim 2 Trajektorie geladen ({session.trajectory_n_frames_2} Frames)
+                    </div>
+                  )}
+                  <label style={{ display: "block", marginBottom: 4, cursor: "pointer" }}>
+                    <div style={{ padding: "4px 10px", borderRadius: 6, border: `1px dashed ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 10, fontWeight: 600, textAlign: "center" }}>
+                      Oder: PDB laden (Sim 2)
+                    </div>
+                    <input type="file" accept=".pdb" onChange={e => handlePDBUpload(e, 2)}
+                      style={{ display: "none" }} />
+                  </label>
+                </>
+              )}
             </div>
           )}
 
@@ -695,7 +762,8 @@ export default function App() {
                 <span style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 40, flexShrink: 0 }}>{networkFrame}</span>
                 <Btn small onClick={async () => {
                   const result = await loadViz("network", { frame: networkFrame, ligand: activeLigand });
-                  // Use mapped CSV mid-frame for 3D viewer sync
+                  // Reset 3D frame state so slider syncs to new IFP range
+                  lastLoadedFrame.current = -1;
                   if (result?.mapped_frame) {
                     loadTrajectoryFrame(result.mapped_frame.csv_mid);
                   }
@@ -824,10 +892,48 @@ export default function App() {
               </div>
             )}
           </div>
+          {/* 3D Frame Slider — range within current IFP */}
+          {hasActiveTrajectory && vizData[currentCacheKey]?.mapped_frame && (() => {
+            const mf = vizData[currentCacheKey].mapped_frame;
+            const jumpBtn = (label, frame) => (
+              <div onClick={() => loadTrajectoryFrame(frame)}
+                style={{
+                  padding: "2px 6px", borderRadius: 4, fontSize: 9, cursor: "pointer",
+                  background: currentTrajectoryFrame === frame ? C.accentDim : "transparent",
+                  color: currentTrajectoryFrame === frame ? C.accent : C.textDim,
+                  border: `1px solid ${currentTrajectoryFrame === frame ? C.accent : C.border}`,
+                  fontWeight: 600, whiteSpace: "nowrap",
+                }}>{label}</div>
+            );
+            return (
+              <div style={{ padding: "6px 12px", borderTop: `1px solid ${C.border}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <span style={{ fontSize: 10, color: C.textDim, flexShrink: 0 }}>3D Frame:</span>
+                  <input type="range"
+                    min={mf.csv_start}
+                    max={mf.csv_end}
+                    value={Math.max(mf.csv_start, Math.min(currentTrajectoryFrame, mf.csv_end))}
+                    onChange={e => loadTrajectoryFrame(Number(e.target.value))}
+                    style={{ flex: 1 }} />
+                  <span style={{ fontSize: 10, color: C.accent, fontWeight: 600, minWidth: 28 }}>
+                    {currentTrajectoryFrame >= 0 ? currentTrajectoryFrame : "—"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                  {jumpBtn("Start " + mf.csv_start, mf.csv_start)}
+                  {jumpBtn("Mitte " + mf.csv_mid, mf.csv_mid)}
+                  {jumpBtn("Ende " + mf.csv_end, mf.csv_end)}
+                </div>
+                <div style={{ fontSize: 9, color: C.textMuted }}>
+                  CSV {mf.csv_start}–{mf.csv_end} ({mf.occurence} Frames)
+                </div>
+              </div>
+            );
+          })()}
           <div style={{ padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 10, color: C.textDim }}>
-            {session?.has_trajectory && lastLoadedFrame.current >= 0
-              ? `Trajektorie Frame ${lastLoadedFrame.current} / ${session.trajectory_n_frames - 1}`
-              : hasPdb
+            {hasActiveTrajectory && currentTrajectoryFrame >= 0
+              ? `Trajektorie Frame ${currentTrajectoryFrame} / ${(activeTrajectoryNFrames || 1) - 1} (${activeLigand === 2 ? session?.ligand_name_2 : session?.ligand_name_1})`
+              : hasActivePdb
                 ? "Residuum im Plot anklicken → 3D-Hervorhebung"
                 : "PDB/Trajektorie laden im Daten-Bereich"}
           </div>

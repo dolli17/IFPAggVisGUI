@@ -21,27 +21,27 @@ export async function uploadCSV(file, ligandName, isSecond = false) {
   return request("/upload", { method: "POST", body: form });
 }
 
-export async function uploadPDB(file) {
+export async function uploadPDB(file, ligand = 1) {
   const form = new FormData();
   form.append("file", file);
-  return request("/upload-pdb", { method: "POST", body: form });
+  return request(`/upload-pdb?ligand=${ligand}`, { method: "POST", body: form });
 }
 
-export async function getPDB() {
-  return request("/pdb");
+export async function getPDB(ligand = 1) {
+  return request(`/pdb?ligand=${ligand}`);
 }
 
-export async function uploadTrajectory(groFile, xtcFiles) {
+export async function uploadTrajectory(groFile, xtcFiles, ligand = 1) {
   const form = new FormData();
   form.append("gro_file", groFile);
   for (const xtcFile of xtcFiles) {
     form.append("xtc_files", xtcFile);
   }
-  return request("/upload-trajectory", { method: "POST", body: form });
+  return request(`/upload-trajectory?ligand=${ligand}`, { method: "POST", body: form });
 }
 
-export async function getTrajectoryFrame(frame) {
-  return request(`/trajectory-frame?frame=${frame}`);
+export async function getTrajectoryFrame(frame, ligand = 1) {
+  return request(`/trajectory-frame?frame=${frame}&ligand=${ligand}`);
 }
 
 export async function runAggregation(isSecond = false, x1 = null, x2 = null) {

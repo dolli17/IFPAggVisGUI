@@ -55,26 +55,29 @@ async def api_upload(
 
 
 @app.post("/api/upload-pdb")
-async def api_upload_pdb(file: UploadFile = File(...)):
+async def api_upload_pdb(file: UploadFile = File(...), ligand: int = 1):
     try:
         content = await file.read()
-        result = load_pdb(session, content, file.filename)
+        result = load_pdb(session, content, file.filename, ligand=ligand)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/pdb")
-def api_get_pdb():
-    if session.pdb_content is None:
-        raise HTTPException(status_code=404, detail="No PDB file loaded")
-    return JSONResponse(content={"pdb": session.pdb_content, "filename": session.pdb_path})
+def api_get_pdb(ligand: int = 1):
+    pdb = session.pdb_content_2 if ligand == 2 else session.pdb_content
+    path = session.pdb_path_2 if ligand == 2 else session.pdb_path
+    if pdb is None:
+        raise HTTPException(status_code=404, detail=f"No PDB file loaded for ligand {ligand}")
+    return JSONResponse(content={"pdb": pdb, "filename": path, "ligand": ligand})
 
 
 @app.post("/api/upload-trajectory")
 async def api_upload_trajectory(
     gro_file: UploadFile = File(...),
     xtc_files: list[UploadFile] = File(...),
+    ligand: int = 1,
 ):
     """Upload GRO topology + one or more XTC trajectories for frame-synced 3D viewing.
 
@@ -98,18 +101,18 @@ async def api_upload_trajectory(
         # Sort by filename to ensure consistent replicate order
         xtc_paths.sort()
 
-        result = load_trajectory(session, gro_path, xtc_paths)
+        result = load_trajectory(session, gro_path, xtc_paths, ligand=ligand)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/trajectory-frame")
-def api_trajectory_frame(frame: int = 0):
+def api_trajectory_frame(frame: int = 0, ligand: int = 1):
     """Return a single trajectory frame as PDB string."""
     try:
-        pdb_str = get_frame_pdb(session, frame)
-        return JSONResponse(content={"pdb": pdb_str, "frame": frame})
+        pdb_str = get_frame_pdb(session, frame, ligand=ligand)
+        return JSONResponse(content={"pdb": pdb_str, "frame": frame, "ligand": ligand})
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
