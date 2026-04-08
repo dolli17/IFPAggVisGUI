@@ -97,8 +97,8 @@ function Viewer3D({ pdbData, highlightResidue }) {
     }
     if (pdbData) {
       viewerRef.current.addModel(pdbData, "pdb");
-      viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4", opacity: 0.7 } });
-      viewerRef.current.addStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
+      viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
+      viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
       viewerRef.current.zoomTo();
       viewerRef.current.render();
     }
@@ -107,15 +107,14 @@ function Viewer3D({ pdbData, highlightResidue }) {
   useEffect(() => {
     if (!viewerRef.current || !pdbData || !highlightResidue) return;
     // Reset styles
-    viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4", opacity: 0.7 } });
-    viewerRef.current.addStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
+    viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
+    viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
     // Highlight residue
     const resName = highlightResidue.replace(/\..+$/, ""); // strip chain
     const match = resName.match(/^([A-Z]+)(\d+)$/);
     if (match) {
       const resi = parseInt(match[2]);
       viewerRef.current.addStyle({ resi }, {
-        cartoon: { color: "#f472b6", opacity: 1.0 },
         stick: { color: "#f472b6" },
       });
     }

@@ -853,9 +853,34 @@ def get_frame_pdb(session: IFPSession, frame: int, ligand: int = 1) -> str:
     return _frame_to_pdb(universe, frame)
 
 
+STANDARD_RESIDUES = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    # Common caps / terminal patches
+    "ACE", "NME", "NMA", "NH2",
+    # Protonation variants
+    "HID", "HIE", "HIP", "HSD", "HSE", "HSP", "CYX", "ASH", "GLH",
+}
+
+
 def _frame_to_pdb(universe, frame: int) -> str:
-    """Convert a single MDAnalysis frame to PDB string."""
+    """Convert a single MDAnalysis frame to PDB string.
+
+    Sets record_types to HETATM for non-standard residues (ligands, water,
+    ions) so that py3Dmol can distinguish them via hetflag.
+    """
+    import numpy as np
     universe.trajectory[frame]
+
+    # Set HETATM for non-standard residues (GRO has no ATOM/HETATM distinction)
+    if not hasattr(universe.atoms, "record_types"):
+        universe.add_TopologyAttr("record_types", ["ATOM"] * len(universe.atoms))
+    rec = np.array(["HETATM"] * len(universe.atoms), dtype=object)
+    for atom in universe.atoms:
+        if atom.resname in STANDARD_RESIDUES:
+            rec[atom.index] = "ATOM"
+    universe.atoms.record_types = rec
+
     with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False, mode="w") as tmp:
         tmp_path = tmp.name
     try:
