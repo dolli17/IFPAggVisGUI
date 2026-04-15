@@ -79,9 +79,8 @@ class IFPSession:
         # ── Parameters ──
         self.memory = 1024
         self.identical_threshold = [0]
-        self.similarity_threshold = [1, 5]
+        self.similarity_threshold = [1, 6]
         self.dissimilarity_threshold = [6]
-        self.dissimilarity_bool = False
         self.dpi = 150
         self.fontsize = 12
         self.node_size = 460
@@ -742,8 +741,7 @@ def run_comparison(session: IFPSession) -> dict:
             a, session.cross_distances, lig_names,
             session.identical_threshold,
             session.similarity_threshold,
-            session.dissimilarity_threshold,
-            session.dissimilarity_bool)
+            session.dissimilarity_threshold)
     t5 = time.perf_counter()
     print(f"[TIMING] run_comparison — classify: {t5 - t4:.3f}s")
     print(f"[TIMING] run_comparison — TOTAL: {t5 - t0:.3f}s")
@@ -937,7 +935,6 @@ def get_session_info(session: IFPSession) -> dict:
             "identical_threshold": session.identical_threshold,
             "similarity_threshold": session.similarity_threshold,
             "dissimilarity_threshold": session.dissimilarity_threshold,
-            "dissimilarity_bool": session.dissimilarity_bool,
             "dpi": session.dpi,
             "fontsize": session.fontsize,
             "node_size": session.node_size,
@@ -958,7 +955,7 @@ def update_parameters(session: IFPSession, params: dict) -> dict:
                 session.distances = None
                 session.cross_distances = None
             if key in ("identical_threshold", "similarity_threshold",
-                       "dissimilarity_threshold", "dissimilarity_bool"):
+                       "dissimilarity_threshold"):
                 session.identical_ifps = None
                 session.similar_ifps = None
                 session.dissimilar_ifps = None

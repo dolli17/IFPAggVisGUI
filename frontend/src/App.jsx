@@ -369,11 +369,25 @@ export default function App() {
   }, [tab, session, activeLigand, viewMode]);
 
   // ── Parameter sync ──
+  const thresholdKeys = ["identical_threshold", "similarity_threshold", "dissimilarity_threshold"];
+
   const syncParam = async (key, value) => {
     setParams(p => ({ ...p, [key]: value }));
     await api.updateParameters({ [key]: value });
-    // Invalidate affected visualizations
-    setVizData({});
+
+    if (thresholdKeys.includes(key)) {
+      // Thresholds only affect comparison — invalidate comparison cache,
+      // re-run classification, and refresh session status
+      setVizData(p => { const next = { ...p }; delete next.comparison; return next; });
+      if (session?.has_comparison) {
+        await api.runComparison();
+        refreshSession();
+        loadViz("comparison");
+      }
+    } else {
+      // Other params (fontsize, node_size, dpi, cmap) affect all visualizations
+      setVizData({});
+    }
   };
 
   // ── Toggle section ──

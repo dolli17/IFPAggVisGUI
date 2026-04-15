@@ -106,9 +106,8 @@ def iterate_dict_assign_IFPs(dic_distances, indices_obs, i, i2, comparison,
     
     return category_values
 
-def calculate_where_diff_and_sim(a, distances, lignames, identical_threshold, 
-                                 similarity_threshold, dissimilarity_threshold,
-                                 dissimilarity_bool):
+def calculate_where_diff_and_sim(a, distances, lignames, identical_threshold,
+                                 similarity_threshold, dissimilarity_threshold):
     """ Calculate which IFPs are identical/similar/dissimilar 
     
     returns indices of IFPs of different categories.
@@ -135,10 +134,6 @@ def calculate_where_diff_and_sim(a, distances, lignames, identical_threshold,
     dissimilarity_threshold : float()
         thresholds were ligand is considered dissimilar, x < threshold.
 
-    dissimilarity_bool : bool
-	    If true, dissimilarity instead of similarity was calculated. Values 
-        will be inverted to similarity by calculating 1-dissimilarity value.
-
     Returns
     -------
     identical_values : dict
@@ -159,22 +154,18 @@ def calculate_where_diff_and_sim(a, distances, lignames, identical_threshold,
     # of interaction (undirected)
     i = 0
     while i < len(distances):
-        # Correct distance value if dissimilarity was calculated
-        # Do not add i+1 here because then you shift the index position by one
-        if dissimilarity_bool:
-            arr = 1- distances[i][i:]
-        else:
-            arr = distances[i][i:]
-        
+        arr = distances[i][i:]
+
         # Check where array has specific values and assign to category, add to
-        # dictionary for each IFP
-        dist_similar = np.where((arr >= similarity_threshold[0]) & 
+        # dictionary for each IFP.
+        # Operators use distance semantics: lower distance = more similar.
+        dist_similar = np.where((arr >= similarity_threshold[0]) &
                                 (arr < similarity_threshold[1]))[0]
-        dist_dissimilar = np.where(arr < dissimilarity_threshold[0])[0]
-        dist_identical = np.where(arr >= identical_threshold[0])[0] 
+        dist_dissimilar = np.where(arr >= dissimilarity_threshold[0])[0]
+        dist_identical = np.where(arr <= identical_threshold[0])[0]
         if len(dist_identical) > 0:
-            # [1:] to ignore similarity to itself
-            indices = dist_identical[1:] + i 
+            # [1:] to ignore distance to itself (always 0)
+            indices = dist_identical[1:] + i
             dic_identical[i] = indices
 
         if len(dist_similar) > 0:
