@@ -59,6 +59,26 @@ export async function getVizNetwork(frame = 0, ligand = 1) {
   return request(`/viz/network?frame=${frame}&ligand=${ligand}`);
 }
 
+export async function getDataNetwork(frame = 0, ligand = 1) {
+  return request(`/data/network?frame=${frame}&ligand=${ligand}`);
+}
+
+export async function getDataOccurrence(ligand = 1) {
+  return request(`/data/occurrence?ligand=${ligand}`);
+}
+
+export async function getDataHeatmap(ligand = 1) {
+  return request(`/data/heatmap?ligand=${ligand}`);
+}
+
+export async function getDataCircle(ligand = 1) {
+  return request(`/data/circle?ligand=${ligand}`);
+}
+
+export async function getDataClusters(ligand = 1) {
+  return request(`/data/clusters?ligand=${ligand}`);
+}
+
 export async function getVizCircle(residue = null, ligand = 1) {
   const params = new URLSearchParams({ ligand });
   if (residue) params.append("residue", residue);

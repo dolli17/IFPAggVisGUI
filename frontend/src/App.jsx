@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as api from "./api";
+import NetworkView from "./NetworkView";
+import OccurrenceView from "./OccurrenceView";
+import HeatmapView from "./HeatmapView";
+import CircleView from "./CircleView";
 
 // ─── Colors ──────────────────────────────────────────────────────
 const C = {
@@ -82,7 +86,7 @@ function Check({ label, checked, onChange }) {
 // ═══════════════════════════════════════════════════════════════════
 // 3D VIEWER COMPONENT
 // ═══════════════════════════════════════════════════════════════════
-function Viewer3D({ pdbData, highlightResidue }) {
+function Viewer3D({ pdbData, highlightResidues }) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
 
@@ -104,22 +108,22 @@ function Viewer3D({ pdbData, highlightResidue }) {
     }
   }, [pdbData]);
 
+  // Multi-selection: highlight every residue in the list. The previously
+  // selected ones are reset by re-applying the base style first.
   useEffect(() => {
-    if (!viewerRef.current || !pdbData || !highlightResidue) return;
-    // Reset styles
+    if (!viewerRef.current || !pdbData) return;
     viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
     viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
-    // Highlight residue
-    const resName = highlightResidue.replace(/\..+$/, ""); // strip chain
-    const match = resName.match(/^([A-Z]+)(\d+)$/);
-    if (match) {
-      const resi = parseInt(match[2]);
-      viewerRef.current.addStyle({ resi }, {
-        stick: { color: "#f472b6" },
-      });
+    for (const label of highlightResidues || []) {
+      const resName = label.replace(/\..+$/, ""); // strip chain
+      const match = resName.match(/^([A-Z]+)(\d+)$/);
+      if (match) {
+        const resi = parseInt(match[2]);
+        viewerRef.current.addStyle({ resi }, { stick: { color: "#f472b6" } });
+      }
     }
     viewerRef.current.render();
-  }, [highlightResidue, pdbData]);
+  }, [highlightResidues, pdbData]);
 
   return (
     <div ref={containerRef}
@@ -137,12 +141,11 @@ export default function App() {
   const [error, setError] = useState(null);
 
   // ── UI state ──
-  const [tab, setTab] = useState("network");
+  const [tab, setTab] = useState("overview");
   const [viewMode, setViewMode] = useState("ligand"); // "ligand" or "comparison"
   const [activeLigand, setActiveLigand] = useState(1);
   const [sections, setSections] = useState({ data: true, pipeline: true, filter: true });
   const [networkFrame, setNetworkFrame] = useState(0);
-  const [circleResidue, setCircleResidue] = useState(null);
   const [x1Filter, setX1Filter] = useState(1.0);
   const [x2Filter, setX2Filter] = useState(0.2);
   const [viewerWidth, setViewerWidth] = useState(280);
@@ -151,7 +154,28 @@ export default function App() {
   // ── Visualization data ──
   const [vizData, setVizData] = useState({});
   const [pdbData, setPdbData] = useState(null);
-  const [highlightResidue, setHighlightResidue] = useState(null);
+  // Multi-selection: array of residue labels. The *last* element is the
+  // "primary" — that's what the 3D viewer focuses and what the circle
+  // chart's focus pane shows. All elements get highlighted in the
+  // network view and the circle sidebar.
+  const [highlightResidues, setHighlightResidues] = useState([]);
+  const primaryResidue = highlightResidues.length
+    ? highlightResidues[highlightResidues.length - 1] : null;
+
+  // Helper: toggle a residue in the selection.
+  //   additive=false  -> replace selection with [label]   (plain click)
+  //   additive=true   -> add or remove (Cmd/Ctrl/Shift+click)
+  const selectResidue = useCallback((label, additive) => {
+    if (!label) {
+      setHighlightResidues([]);
+      return;
+    }
+    setHighlightResidues(prev => {
+      if (!additive) return [label];
+      if (prev.includes(label)) return prev.filter(l => l !== label);
+      return [...prev, label];
+    });
+  }, []);
 
   // ── Parameter state (local, synced on change) ──
   const [params, setParams] = useState({
@@ -329,16 +353,24 @@ export default function App() {
       let data;
       switch (vizTab) {
         case "network":
-          data = await api.getVizNetwork(opts.frame || 0, lig);
+          // NEW: Cytoscape-based client-side rendering. The payload is
+          // raw graph data (nodes/edges/positions), no PNG.
+          data = await api.getDataNetwork(opts.frame || 0, lig);
           break;
         case "circle":
-          data = await api.getVizCircle(opts.residue || null, lig);
+          // NEW: client-side D3/SVG rendering. Returns run-length data
+          // for all residues; the frontend handles the focus/sidebar UI.
+          data = await api.getDataCircle(lig);
           break;
         case "heatmap":
-          data = await api.getVizHeatmap(lig);
+          // NEW: client-side Canvas + SVG rendering. Returns the raw
+          // distance matrix; the frontend handles colour mapping and hit-testing.
+          data = await api.getDataHeatmap(lig);
           break;
         case "occurrence":
-          data = await api.getVizOccurrence(lig);
+          // NEW: client-side D3/SVG rendering. Returns occurrence values
+          // and ifp_ids; the cumulative curve is computed in the frontend.
+          data = await api.getDataOccurrence(lig);
           break;
         case "comparison":
           data = await api.getVizComparison();
@@ -362,11 +394,60 @@ export default function App() {
     }
     if (!session?.has_aggregation) return;
     if (activeLigand === 2 && !session?.has_second_aggregation) return;
+    if (tab === "overview") {
+      // Overview shows all four viz at once — pre-load every cache key
+      // that's still empty. Fires in parallel; loadViz tracks its own
+      // loading state per viz so the UI stays consistent.
+      for (const t of ["network", "circle", "heatmap", "occurrence"]) {
+        const ck = `${t}_${activeLigand}`;
+        if (!vizData[ck]) {
+          loadViz(t, { frame: networkFrame, ligand: activeLigand });
+        }
+      }
+      return;
+    }
     const cacheKey = `${tab}_${activeLigand}`;
     if (!vizData[cacheKey]) {
-      loadViz(tab, { frame: networkFrame, residue: circleResidue, ligand: activeLigand });
+      loadViz(tab, { frame: networkFrame, ligand: activeLigand });
     }
   }, [tab, session, activeLigand, viewMode]);
+
+  // ── Auto-reload network panel when networkFrame changes ──
+  // The other panels (circle/heatmap/occurrence) are frame-independent
+  // and don't need a refetch. Only the network is frame-specific —
+  // its cached payload carries `frame_index` from when it was loaded,
+  // so when the user clicks a diagonal in the heatmap or a point in
+  // occurrence (which only updates `networkFrame`), we have to refresh
+  // the network cache too. Debounced so dragging the frame slider
+  // doesn't fire a request per pixel.
+  useEffect(() => {
+    if (!session?.has_aggregation) return;
+    if (activeLigand === 2 && !session?.has_second_aggregation) return;
+    const ck = `network_${activeLigand}`;
+    const cached = vizData[ck];
+    // Skip until the panel has been loaded once; the main loading
+    // effect above takes care of the initial fetch.
+    if (!cached) return;
+    if (cached.frame_index === networkFrame) return; // already in sync
+    const t = setTimeout(async () => {
+      const result = await loadViz("network", {
+        frame: networkFrame, ligand: activeLigand,
+      });
+      // Reset 3D-trajectory frame state so the slider in the right
+      // sidebar resyncs to the new IFP's CSV-frame range.
+      lastLoadedFrame.current = -1;
+      if (result?.mapped_frame) {
+        loadTrajectoryFrame(result.mapped_frame.csv_mid);
+      }
+    }, 150);
+    return () => clearTimeout(t);
+    // We intentionally exclude `loadViz` and `loadTrajectoryFrame` —
+    // they're recreated each render, so depending on them would
+    // re-trigger the effect on every render and hammer the backend.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [networkFrame, activeLigand,
+      session?.has_aggregation, session?.has_second_aggregation,
+      vizData]);
 
   // ── Parameter sync ──
   const thresholdKeys = ["identical_threshold", "similarity_threshold", "dissimilarity_threshold"];
@@ -402,6 +483,7 @@ export default function App() {
   const hasPdb = session?.has_pdb;
 
   const vizTabs = [
+    { id: "overview", label: "Übersicht" },
     { id: "network", label: "Netzwerk" },
     { id: "circle", label: "Kreisdiagramm" },
     { id: "heatmap", label: "Distanzmatrix" },
@@ -763,12 +845,17 @@ export default function App() {
             </div>
           )}
 
-          {/* Viz controls bar (tab-specific, only in ligand mode) */}
-          {viewMode === "ligand" && hasAgg && tab === "network" && vizData[currentCacheKey] && (
+          {/* Viz controls bar — frame slider for network AND overview tab.
+              The overview shows the network as one of four panels, so the
+              frame slider must be reachable there too; both tabs read
+              from the same `network_${activeLigand}` cache. */}
+          {viewMode === "ligand" && hasAgg
+              && (tab === "network" || tab === "overview")
+              && vizData[`network_${activeLigand}`] && (
             <div style={{ borderBottom: `1px solid ${C.border}`, background: C.surface }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
                 <span style={{ fontSize: 11, color: C.textDim, flexShrink: 0 }}>Frame:</span>
-                <input type="range" min={0} max={(vizData[currentCacheKey].total_frames || 1) - 1}
+                <input type="range" min={0} max={(vizData[`network_${activeLigand}`].total_frames || 1) - 1}
                   value={networkFrame}
                   onChange={e => setNetworkFrame(Number(e.target.value))}
                   style={{ flex: 1 }} />
@@ -785,37 +872,28 @@ export default function App() {
                   {loading.viz_network ? <Spinner /> : "Laden"}
                 </Btn>
               </div>
-              {vizData[currentCacheKey].mapped_frame && (
+              {vizData[`network_${activeLigand}`].mapped_frame && (
                 <div style={{ padding: "2px 16px 4px", fontSize: 10, color: C.textMuted, display: "flex", gap: 12 }}>
-                  <span>CSV-Frames: {vizData[currentCacheKey].mapped_frame.csv_start}–{vizData[currentCacheKey].mapped_frame.csv_end}</span>
-                  <span>Mitte: {vizData[currentCacheKey].mapped_frame.csv_mid}</span>
-                  <span>({vizData[currentCacheKey].mapped_frame.occurence}x)</span>
+                  <span>CSV-Frames: {vizData[`network_${activeLigand}`].mapped_frame.csv_start}–{vizData[`network_${activeLigand}`].mapped_frame.csv_end}</span>
+                  <span>Mitte: {vizData[`network_${activeLigand}`].mapped_frame.csv_mid}</span>
+                  <span>({vizData[`network_${activeLigand}`].mapped_frame.occurence}x)</span>
                 </div>
               )}
-              {vizData[currentCacheKey].active_residues && (
+              {vizData[`network_${activeLigand}`].active_residues && (
                 <div style={{ padding: "0 16px 8px", fontSize: 10, color: C.textDim, lineHeight: 1.8, flexWrap: "wrap", display: "flex", gap: 2, alignItems: "center" }}>
                   <span>Aktiv:</span>
-                  {[...new Set(vizData[currentCacheKey].active_residues)].map((r, i) => (
-                    <span key={i} onClick={() => setHighlightResidue(r)}
-                      style={{ color: highlightResidue === r ? C.pink : C.accent, cursor: "pointer", marginLeft: 4, fontWeight: 600 }}>{r}</span>
+                  {[...new Set(vizData[`network_${activeLigand}`].active_residues)].map((r, i) => (
+                    <span key={i}
+                      onClick={(e) => selectResidue(r, e.metaKey || e.ctrlKey || e.shiftKey)}
+                      style={{ color: highlightResidues.includes(r) ? C.pink : C.accent, cursor: "pointer", marginLeft: 4, fontWeight: 600 }}>{r}</span>
                   ))}
                 </div>
               )}
             </div>
           )}
 
-          {viewMode === "ligand" && hasAgg && tab === "circle" && vizData[currentCacheKey] && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderBottom: `1px solid ${C.border}`, background: C.surface, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, color: C.textDim }}>Residuum:</span>
-              <div onClick={() => { setCircleResidue(null); loadViz("circle", { ligand: activeLigand }); }}
-                style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: !circleResidue ? C.accentDim : "transparent", color: !circleResidue ? C.accent : C.textDim, border: `1px solid ${!circleResidue ? C.accent : C.border}` }}>Alle</div>
-              {vizData[currentCacheKey].residues?.map(r => (
-                <div key={r}
-                  onClick={() => { setCircleResidue(r); setHighlightResidue(r); loadViz("circle", { residue: r, ligand: activeLigand }); }}
-                  style={{ padding: "3px 8px", borderRadius: 4, fontSize: 10, cursor: "pointer", background: circleResidue === r ? C.pinkDim : "transparent", color: circleResidue === r ? C.pink : C.textDim, border: `1px solid ${circleResidue === r ? C.pink : C.border}` }}>{r}</div>
-              ))}
-            </div>
-          )}
+          {/* Old residue-button bar for the circle tab is gone — the
+              new <CircleView> has its own sidebar with all residues. */}
 
           {/* Main viz area */}
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, minHeight: 0, overflow: "auto" }}>
@@ -845,18 +923,140 @@ export default function App() {
                   </div>
                 </div>
               )
-            ) : tab === "circle" && vizData[currentCacheKey] ? (
-              // Circle: show grid of residue charts
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", alignItems: "flex-start", maxHeight: "100%", overflow: "auto" }}>
-                {Object.entries(vizData[currentCacheKey].images || {}).map(([key, img]) => (
-                  <div key={key}
-                    onClick={() => { if (key !== "_legend") { setHighlightResidue(key); } }}
-                    style={{ cursor: key !== "_legend" ? "pointer" : "default", border: `2px solid ${highlightResidue === key ? C.pink : "transparent"}`, borderRadius: 8, overflow: "hidden" }}>
-                    <img src={`data:image/png;base64,${img}`}
-                      style={{ maxWidth: circleResidue ? 400 : 200, height: "auto", display: "block" }}
-                      alt={key} />
+            ) : tab === "overview" ? (
+              // ── 2×2 grid: all four viz at once, fully linked ──
+              // Selection state (highlightResidue, networkFrame) is shared,
+              // so a click in any panel updates the other three live.
+              // Comparison view is intentionally excluded from this grid.
+              (() => {
+                const netData    = vizData[`network_${activeLigand}`];
+                const circleData = vizData[`circle_${activeLigand}`];
+                const heatData   = vizData[`heatmap_${activeLigand}`];
+                const occData    = vizData[`occurrence_${activeLigand}`];
+                const Panel = ({ title, children, loading: pLoading }) => (
+                  <div style={{
+                    display: "flex", flexDirection: "column", minWidth: 0,
+                    minHeight: 0, border: `1px solid ${C.border}`,
+                    borderRadius: 8, background: C.surface,
+                    overflow: "hidden",
+                  }}>
+                    <div style={{
+                      padding: "6px 12px", fontSize: 11, fontWeight: 600,
+                      color: C.text, borderBottom: `1px solid ${C.border}`,
+                      background: C.surfaceLight, flexShrink: 0,
+                      display: "flex", justifyContent: "space-between",
+                      alignItems: "center",
+                    }}>
+                      <span>{title}</span>
+                      {pLoading && <Spinner />}
+                    </div>
+                    <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+                      {children}
+                    </div>
                   </div>
-                ))}
+                );
+                return (
+                  <div style={{
+                    width: "100%", height: "100%",
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gridTemplateRows: "1fr 1fr",
+                    gap: 8,
+                  }}>
+                    <Panel title="Netzwerk"
+                      loading={loading.viz_network && !netData}>
+                      {netData?.nodes ? (
+                        <NetworkView
+                          data={netData}
+                          selectedLabels={highlightResidues}
+                          onSelect={(label, additive) => selectResidue(label, additive)}
+                          onBackgroundClick={() => setHighlightResidues([])}
+                        />
+                      ) : (
+                        <div style={{ padding: 16, fontSize: 11,
+                                      color: C.textDim }}>Lädt …</div>
+                      )}
+                    </Panel>
+                    <Panel title="Kreisdiagramm"
+                      loading={loading.viz_circle && !circleData}>
+                      {circleData?.rings_by_residue ? (
+                        <CircleView
+                          data={circleData}
+                          selectedLabels={highlightResidues}
+                          onSelect={(label, additive) => selectResidue(label, additive)}
+                          compact
+                        />
+                      ) : (
+                        <div style={{ padding: 16, fontSize: 11,
+                                      color: C.textDim }}>Lädt …</div>
+                      )}
+                    </Panel>
+                    <Panel title="Distanzmatrix"
+                      loading={loading.viz_heatmap && !heatData}>
+                      {heatData?.distances ? (
+                        <HeatmapView
+                          data={heatData}
+                          selectedIndex={networkFrame}
+                          onSelectIndex={(i) => setNetworkFrame(i)}
+                        />
+                      ) : (
+                        <div style={{ padding: 16, fontSize: 11,
+                                      color: C.textDim }}>Lädt …</div>
+                      )}
+                    </Panel>
+                    <Panel title="Vorkommen"
+                      loading={loading.viz_occurrence && !occData}>
+                      {occData?.occurrence ? (
+                        <OccurrenceView
+                          data={occData}
+                          selectedIndex={networkFrame}
+                          onSelectIndex={(i) => setNetworkFrame(i)}
+                        />
+                      ) : (
+                        <div style={{ padding: 16, fontSize: 11,
+                                      color: C.textDim }}>Lädt …</div>
+                      )}
+                    </Panel>
+                  </div>
+                );
+              })()
+            ) : tab === "network" && vizData[currentCacheKey]?.nodes ? (
+              // Network: client-side Cytoscape rendering (no PNG)
+              <div style={{ width: "100%", height: "100%" }}>
+                <NetworkView
+                  data={vizData[currentCacheKey]}
+                  selectedLabels={highlightResidues}
+                  onSelect={(label, additive) => selectResidue(label, additive)}
+                  onBackgroundClick={() => setHighlightResidues([])}
+                />
+              </div>
+            ) : tab === "occurrence" && vizData[currentCacheKey]?.occurrence ? (
+              // Occurrence: client-side D3/SVG rendering (no PNG)
+              <div style={{ width: "100%", height: "100%" }}>
+                <OccurrenceView
+                  data={vizData[currentCacheKey]}
+                  selectedIndex={networkFrame}
+                  onSelectIndex={(i) => setNetworkFrame(i)}
+                />
+              </div>
+            ) : tab === "heatmap" && vizData[currentCacheKey]?.distances ? (
+              // Distance matrix: Canvas (matrix) + SVG (axes, hover, selection)
+              <div style={{ width: "100%", height: "100%" }}>
+                <HeatmapView
+                  data={vizData[currentCacheKey]}
+                  selectedIndex={networkFrame}
+                  onSelectIndex={(i) => setNetworkFrame(i)}
+                />
+              </div>
+            ) : tab === "circle" && vizData[currentCacheKey]?.rings_by_residue ? (
+              // Circle: client-side D3/SVG rendering. Sidebar with all
+              // residues, focus pane on the right (β layout).
+              <div style={{ width: "100%", height: "100%" }}>
+                <CircleView
+                  data={vizData[currentCacheKey]}
+                  selectedLabels={highlightResidues}
+                  onSelect={(label, additive) => selectResidue(label, additive)}
+                />
               </div>
             ) : vizData[currentCacheKey]?.image ? (
               <img src={`data:image/png;base64,${vizData[currentCacheKey].image}`}
@@ -889,13 +1089,17 @@ export default function App() {
         <div style={{ width: viewerWidth, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>3D Viewer</span>
-            {highlightResidue && (
-              <span style={{ fontSize: 10, color: C.pink, fontWeight: 600 }}>{highlightResidue}</span>
+            {highlightResidues.length > 0 && (
+              <span style={{ fontSize: 10, color: C.pink, fontWeight: 600 }}>
+                {highlightResidues.length === 1
+                  ? highlightResidues[0]
+                  : `${highlightResidues.length} Residuen`}
+              </span>
             )}
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             {pdbData ? (
-              <Viewer3D pdbData={pdbData} highlightResidue={highlightResidue} />
+              <Viewer3D pdbData={pdbData} highlightResidues={highlightResidues} />
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, textAlign: "center" }}>
                 <div>

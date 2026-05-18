@@ -14,6 +14,8 @@ from pipeline import (
     render_distance_matrix, render_occurrence, run_comparison,
     render_comparison, load_pdb, load_trajectory, get_frame_pdb,
     get_session_info, update_parameters,
+    data_network, data_occurrence, data_distance_matrix, data_circle,
+    data_clusters,
 )
 
 app = FastAPI(title="IFPAggVis GUI Backend", version="0.1.0")
@@ -147,6 +149,51 @@ def api_compare():
 def api_viz_network(frame: int = 0, ligand: int = 1):
     try:
         return render_network(session, frame, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/network")
+def api_data_network(frame: int = 0, ligand: int = 1):
+    """JSON network data for client-side rendering (Cytoscape)."""
+    try:
+        return data_network(session, frame, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/occurrence")
+def api_data_occurrence(ligand: int = 1):
+    """JSON occurrence data for client-side rendering (D3/SVG)."""
+    try:
+        return data_occurrence(session, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/heatmap")
+def api_data_heatmap(ligand: int = 1):
+    """JSON distance-matrix data for client-side rendering (Canvas + SVG)."""
+    try:
+        return data_distance_matrix(session, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/circle")
+def api_data_circle(ligand: int = 1):
+    """JSON circle-chart data (run-length per residue) for client-side rendering."""
+    try:
+        return data_circle(session, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/clusters")
+def api_data_clusters(ligand: int = 1):
+    """JSON structural-cluster data (per-IFP cluster id + per-cluster summary)."""
+    try:
+        return data_clusters(session, ligand=ligand)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

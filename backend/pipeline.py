@@ -44,6 +44,12 @@ class IFPSession:
         self.ifp_count = 0
         self.frame_map = None          # list of dicts: csv_start, csv_end, csv_mid per aggregated IFP
         self.x1_offset = 0             # frames dropped at start by x1 rolling window
+        # Structural (interaction-based) aggregation — see notebook 02.
+        # `structure_clusters[i]` = cluster id of the i-th time-aggregated IFP.
+        # `structure_cluster_summary` = one entry per distinct IFP pattern,
+        # sorted by frame_count desc.
+        self.structure_clusters = None
+        self.structure_cluster_summary = None
 
         # ── Second simulation ──
         self.flat_df_2 = None
@@ -64,6 +70,8 @@ class IFPSession:
         self.ifp_count_2 = 0
         self.frame_map_2 = None
         self.x1_offset_2 = 0
+        self.structure_clusters_2 = None
+        self.structure_cluster_summary_2 = None
 
         # ── Comparison state ──
         self.merged_df = None
@@ -257,9 +265,20 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
     df_processed = df_processed[nonzero_cols]
 
     # Step 3: Time-based aggregation — consecutive identical IFPs
+    # Snapshot int_cols *before* diff_to_prev is appended; we reuse the
+    # post-x2 binary df for the structural cluster groupby below.
+    cluster_int_cols = list(df_processed.columns)
+    df_x2_binary = df_processed.copy()
+
     new_list, list_values = aggregate.calculate_differences_rows(df_processed)
     df_processed["diff_to_prev"] = list_values
     agg_df = aggregate.summarise_df(df_processed, "diff_to_prev")
+
+    # Step 3b: Structural aggregation (notebook 02) for cluster discovery.
+    # Cheap O(N·D) groupby; result is independent of time-aggregation, so we
+    # store it alongside the time-aggregated state.
+    cluster_per_ifp, cluster_summary = _compute_structure_clusters(
+        agg_df, df_x2_binary, cluster_int_cols)
 
     # Step 4: Build frame map — maps each aggregated IFP back to CSV frame range
     # agg_df.index contains the post-x1 frame indices from summarise_df
@@ -282,6 +301,8 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
         session.ifp_count_2 = len(agg_df)
         session.frame_map_2 = frame_map
         session.x1_offset_2 = x1_offset
+        session.structure_clusters_2 = cluster_per_ifp
+        session.structure_cluster_summary_2 = cluster_summary
         # Reset downstream for second sim
         session.distances_2 = None
         session.node_positions_2 = None
@@ -297,6 +318,8 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
         session.ifp_count = len(agg_df)
         session.frame_map = frame_map
         session.x1_offset = x1_offset
+        session.structure_clusters = cluster_per_ifp
+        session.structure_cluster_summary = cluster_summary
         # Reset downstream
         session.distances = None
         session.node_positions = None
@@ -312,7 +335,102 @@ def run_aggregation(session: IFPSession, is_second: bool = False,
         "x2_filter": x2_val,
         "x1_offset": x1_offset,
         "interactions_remaining": len(nonzero_cols),
+        "structure_clusters": len(cluster_summary),
     }
+
+
+def _compute_structure_clusters(agg_df, df_x2_binary, int_cols):
+    """Structural (interaction-based) aggregation à la notebook 02.
+
+    Mirrors the notebook's
+        df_x2_result.groupby(all_cols, as_index=False).size()
+                    .sort_values("size", ascending=False)
+    plus aggregate.calculate_differences_rows for the diff_to_prev column.
+
+    UI-only extension on top of the notebook output: for each cluster we
+    also report which time-aggregated IFP positions belong to it and a
+    representative IFP (= the one with the longest run length within the
+    cluster). The frontend needs this to drive linked views without having
+    to recompute the mapping itself.
+
+    Returns
+    -------
+    cluster_per_ifp : list[int]
+        Cluster id (0…n_clusters-1) for each row of ``agg_df``. Cluster 0
+        is the most frequent pattern (by total frame count).
+    summary : list[dict]
+        One entry per cluster, sorted by frame_count desc.
+    """
+    n_agg = len(agg_df)
+    if n_agg == 0 or not int_cols:
+        return [], []
+
+    # ── Notebook step: structural groupby on the post-x2 binary df ──
+    df_int_agg = (df_x2_binary[int_cols]
+                  .groupby(int_cols, as_index=False)
+                  .size()
+                  .sort_values("size", ascending=False)
+                  .reset_index(drop=True))
+
+    # ── Notebook step: diff_to_prev between consecutive cluster patterns
+    # via the existing library function. Slices off the trailing "size"
+    # column the same way the notebook does (`iloc[::1, :-1]`).
+    _, diff_to_prev = aggregate.calculate_differences_rows(
+        df_int_agg.iloc[:, :-1])
+
+    # ── UI extension: assign cluster ids to time-aggregated IFPs ──
+    pattern_to_cid = {}
+    for cid in range(len(df_int_agg)):
+        pat = tuple(int(df_int_agg.iloc[cid][c]) for c in int_cols)
+        pattern_to_cid[pat] = cid
+
+    cluster_per_ifp = []
+    ifp_indices_per_cluster = [[] for _ in range(len(df_int_agg))]
+    occ_per_cluster_pos = [[] for _ in range(len(df_int_agg))]
+    occ_values = agg_df["occurence"].values
+    agg_int = agg_df[int_cols].values  # ndarray for speed
+    for pos in range(n_agg):
+        pat = tuple(int(v) for v in agg_int[pos])
+        cid = pattern_to_cid.get(pat)
+        if cid is None:
+            cluster_per_ifp.append(-1)
+            continue
+        cluster_per_ifp.append(cid)
+        ifp_indices_per_cluster[cid].append(pos)
+        occ_per_cluster_pos[cid].append(int(occ_values[pos]))
+
+    # ── Build the per-cluster summary records ──
+    total_frames = float(agg_df["occurence"].sum())
+    summary = []
+    for cid in range(len(df_int_agg)):
+        row = df_int_agg.iloc[cid]
+        pattern = [int(row[c]) for c in int_cols]
+        active_cols = [int_cols[k] for k, v in enumerate(pattern) if v == 1]
+        active_residues = sorted({c.split("_")[0] for c in active_cols})
+        positions = ifp_indices_per_cluster[cid]
+        occs = occ_per_cluster_pos[cid]
+        rep_idx = int(positions[int(np.argmax(occs))]) if positions else None
+
+        # calculate_differences_rows returns np.array([]) for index 0
+        # (first cluster has no predecessor). Coerce to 0 for JSON.
+        diff_val = diff_to_prev[cid] if cid < len(diff_to_prev) else 0
+        if isinstance(diff_val, np.ndarray):
+            diff_val = 0
+
+        summary.append({
+            "cluster_id": cid,
+            "pattern": pattern,
+            "active_residues": active_residues,
+            "n_active": int(sum(pattern)),
+            "frame_count": int(row["size"]),
+            "frame_fraction": (int(row["size"]) / total_frames
+                               if total_frames else 0.0),
+            "ifp_count": len(positions),
+            "ifp_indices": positions,
+            "representative_ifp": rep_idx,
+            "diff_to_prev_cluster": int(diff_val),
+        })
+    return cluster_per_ifp, summary
 
 
 def _ensure_network_state(session: IFPSession, ligand: int = 1):
@@ -516,6 +634,129 @@ def render_network(session: IFPSession, frame_index: int = 0, ligand: int = 1) -
     }
 
 
+# ── Frontend-rendering data colors / glyph mapping ──
+# These mirror _get_interaction_glyphs() but are translated into shape/color
+# tokens that Cytoscape understands directly (no matplotlib involved).
+# `tab:blue`/`tab:red` from matplotlib become hex equivalents.
+INTERACTION_STYLES_FRONTEND = {
+    "Anionic":       {"shape": "triangle",         "color": "#1f77b4"},
+    "Cationic":      {"shape": "triangle",         "color": "#d62728"},  # ^ inverted in matplotlib
+    "CationPi":      {"shape": "star",             "color": "#d62728"},
+    "PiCation":      {"shape": "star",             "color": "#1f77b4"},
+    "PiStacking":    {"shape": "pentagon",         "color": "#1f77b4"},
+    "EdgeToFace":    {"shape": "diamond",          "color": "#d62728"},
+    "FaceToFace":    {"shape": "diamond",          "color": "#1f77b4"},
+    "Hydrophobic":   {"shape": "ellipse",          "color": "#1f77b4"},
+    "HBAcceptor":    {"shape": "round-rectangle",  "color": "#1f77b4"},
+    "HBDonor":       {"shape": "round-rectangle",  "color": "#d62728"},
+    "MetalAcceptor": {"shape": "round-rectangle",  "color": "#d62728"},
+    "MetalDonor":    {"shape": "round-rectangle",  "color": "#1f77b4"},
+    "XBAcceptor":    {"shape": "rectangle",        "color": "#d62728"},
+    "XBDonor":       {"shape": "rectangle",        "color": "#1f77b4"},
+    "VdWContact":    {"shape": "ellipse",          "color": "#d62728"},
+}
+
+
+def data_network(session: IFPSession, frame_index: int = 0,
+                 ligand: int = 1) -> dict:
+    """Return raw network data for client-side rendering (Cytoscape).
+
+    Companion to ``render_network``. Returns the full residue graph with
+    the layout positions computed in ``_ensure_network_state``, plus
+    per-frame information about which residues are active and which edges
+    are present. The frontend draws this directly.
+    """
+    _ensure_network_state(session, ligand)
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
+    pos_nodes = getattr(session, "node_positions_2" if ligand == 2 else "node_positions")
+    label_dict = getattr(session, "label_dict_2" if ligand == 2 else "label_dict")
+    int_type_dict = getattr(session, "int_type_dict_2" if ligand == 2 else "int_type_dict")
+    active_nodes = getattr(session, "active_nodes_2" if ligand == 2 else "active_nodes")
+    edge_lists = getattr(session, "edge_lists_2" if ligand == 2 else "edge_lists")
+    total_frames = len(agg)
+
+    if frame_index < 0 or frame_index >= total_frames:
+        frame_index = 0
+
+    occurence_values = agg["occurence"].values
+    network_numbers = agg.index.tolist()
+
+    # Active interaction-node ids for this frame (e.g. [3, 7, 12])
+    active_ids_this_frame = set(
+        active_nodes.get(frame_index, {}).get("LIG", []) or [])
+
+    # ── Nodes ── stable id -> "n<int>" or "lig"; we keep the original id
+    # in `raw_id` so the edge list can match it without ambiguity.
+    nodes_out = []
+
+    # Center ligand node
+    lig_x, lig_y = pos_nodes.get("LIG", (0.0, 0.0))
+    nodes_out.append({
+        "id": "lig",
+        "raw_id": "LIG",
+        "label": "LIG",
+        "type": "ligand",
+        "interaction": None,
+        "x": float(lig_x),
+        "y": float(lig_y),
+        "active": True,  # ligand is always present
+    })
+
+    # Residue / interaction nodes
+    for i, col in enumerate(int_cols):
+        x, y = pos_nodes.get(i, (0.0, 0.0))
+        int_type = int_type_dict.get(i, "Hydrophobic")
+        nodes_out.append({
+            "id": f"n{i}",
+            "raw_id": i,
+            "label": label_dict.get(i, str(i)),
+            "type": "residue",
+            "interaction": int_type,
+            "x": float(x),
+            "y": float(y),
+            "active": i in active_ids_this_frame,
+        })
+
+    # ── Edges for current frame ──
+    def _eid(node_id):
+        return "lig" if node_id == "LIG" else f"n{node_id}"
+
+    edges_out = []
+    edges_for_frame = edge_lists[frame_index] if (
+        edge_lists is not None and frame_index < len(edge_lists)) else []
+    for i, edge in enumerate(edges_for_frame):
+        # edges are usually (LIG, residue_id) tuples
+        if len(edge) < 2:
+            continue
+        src, tgt = edge[0], edge[1]
+        edges_out.append({
+            "id": f"e{i}",
+            "source": _eid(src),
+            "target": _eid(tgt),
+        })
+
+    # Frame mapping for 3D viewer sync
+    frame_map = getattr(session, "frame_map_2" if ligand == 2 else "frame_map")
+    mapped_frame = None
+    if frame_map and 0 <= frame_index < len(frame_map):
+        mapped_frame = frame_map[frame_index]
+
+    return {
+        "frame_index": frame_index,
+        "total_frames": total_frames,
+        "ifp_id": int(network_numbers[frame_index]),
+        "occurrence": int(occurence_values[frame_index]),
+        "occurrence_curve": [int(v) for v in occurence_values],
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "active_residues": [label_dict.get(n, str(n))
+                            for n in active_ids_this_frame],
+        "mapped_frame": mapped_frame,
+        "interaction_styles": INTERACTION_STYLES_FRONTEND,
+    }
+
+
 def _get_interaction_glyphs(node_size_basic):
     """Return interaction glyph definitions for network rendering."""
     ns = node_size_basic
@@ -703,6 +944,188 @@ def render_occurrence(session: IFPSession, ligand: int = 1) -> dict:
         "total_frames": int(np.sum(occ)),
         "unique_ifps": len(occ),
         "max_occurrence": int(np.max(occ)),
+    }
+
+
+def data_circle(session: IFPSession, ligand: int = 1) -> dict:
+    """Return raw circle-chart data for client-side rendering.
+
+    Companion to ``render_circle_chart``. Reuses the existing
+    run-length cache (``session.run_lengths`` / ``session.colours``)
+    that ``render_circle_chart`` populates on first call. We ship the
+    data for *all* residues at once — the frontend handles the
+    "show one focused" UI in the sidebar layout, so a per-residue
+    endpoint would just add round-trips for no benefit.
+    """
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    if agg is None:
+        raise ValueError("Run aggregation first.")
+
+    int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
+
+    rl_attr = "run_lengths_2" if ligand == 2 else "run_lengths"
+    col_attr = "colours_2" if ligand == 2 else "colours"
+
+    if getattr(session, rl_attr) is None:
+        rl, cols = aggregate.calculate_lengths_interaction(agg[int_cols])
+        setattr(session, rl_attr, rl)
+        setattr(session, col_attr, cols)
+
+    dfs = getattr(session, rl_attr)        # dict: "RES_INT" -> DataFrame(value,size)
+    colours = getattr(session, col_attr)   # dict: int_type -> color
+
+    # Determine residues (sorted, like the matplotlib version)
+    all_residues = sorted(set(c.split("_")[0] for c in int_cols))
+
+    # Build the per-residue ring structure
+    rings_by_residue = {}
+    for res in all_residues:
+        # All interaction keys belonging to this residue
+        res_keys = [k for k in dfs.keys() if k.startswith(res + "_")]
+        if not res_keys:
+            continue
+        rings = []
+        for key in res_keys:
+            df_ring = dfs[key]
+            int_type = key.split("_", 1)[1]
+            color = colours.get(int_type, "#6c7bd4")
+            # Convert matplotlib color (str hex / tuple / named) to a hex
+            # string the browser can use directly.
+            color_hex = _color_to_hex(color)
+            segments = [
+                {"value": int(v), "size": int(s)}
+                for v, s in zip(df_ring["value"].values,
+                                df_ring["size"].values)
+            ]
+            rings.append({
+                "interaction_type": int_type,
+                "color": color_hex,
+                "segments": segments,
+            })
+        rings_by_residue[res] = rings
+
+    return {
+        "residues": all_residues,
+        "rings_by_residue": rings_by_residue,
+        "interaction_colors": {
+            k: _color_to_hex(v) for k, v in colours.items()
+        },
+        "n_ifps": len(agg),
+    }
+
+
+def _color_to_hex(c) -> str:
+    """Best-effort conversion of a matplotlib color to a `#rrggbb` string."""
+    if isinstance(c, str):
+        if c.startswith("#"):
+            return c
+        # Named matplotlib colors → hex via to_hex
+        try:
+            from matplotlib.colors import to_hex
+            return to_hex(c)
+        except Exception:
+            return "#6c7bd4"
+    # tuple / list of floats in [0,1]
+    if isinstance(c, (tuple, list)) and len(c) >= 3:
+        r, g, b = c[:3]
+        return "#{:02x}{:02x}{:02x}".format(
+            int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+    return "#6c7bd4"
+
+
+def data_distance_matrix(session: IFPSession, ligand: int = 1) -> dict:
+    """Return raw distance-matrix data for client-side rendering.
+
+    Companion to ``render_distance_matrix``. We reuse the already-cached
+    pairwise distances on the session (computed by
+    ``calculate.calculate_distances`` via the matplotlib path on first
+    request) so this endpoint is cheap even for large N.
+
+    Output shape: a flat NxN array of Manhattan distances (= count of
+    differing IFP positions), plus IFP ids and occurrence counts so the
+    frontend can label rows/columns and surface useful tooltips.
+    """
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    if agg is None:
+        raise ValueError("Run aggregation first.")
+
+    int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
+
+    dist_attr = "distances_2" if ligand == 2 else "distances"
+
+    # Compute distances on first call (parity with render_distance_matrix
+    # so the heatmap and the data endpoint share the same cache).
+    if getattr(session, dist_attr) is None:
+        ifp_values = agg[int_cols].values.tolist()
+        setattr(session, dist_attr, calculate.calculate_distances(
+            ifp_values, session.memory))
+
+    distances = getattr(session, dist_attr)
+    occ = agg["occurence"].values
+    ifp_ids = agg.index.tolist()
+
+    # Convert to a JSON-serialisable nested list. NxN with N up to a few
+    # thousand stays well within JSON limits; for huge N we'd switch to
+    # a binary endpoint, but matplotlib's render path has the same cap.
+    dist_list = [[float(v) for v in row] for row in distances]
+
+    return {
+        "distances": dist_list,
+        "ifp_ids": [int(v) for v in ifp_ids],
+        "occurrence": [int(v) for v in occ],
+        "n": len(ifp_ids),
+        "max_distance": float(np.max(distances)) if len(distances) else 0.0,
+        "min_distance": float(np.min(distances)) if len(distances) else 0.0,
+    }
+
+
+def data_occurrence(session: IFPSession, ligand: int = 1) -> dict:
+    """Return raw occurrence data for client-side rendering.
+
+    Companion to ``render_occurrence``. Per IFP we report how often it
+    appeared (`occurrence`), the original IFP id (`ifp_ids`, may not be
+    contiguous after aggregation), and a few summary numbers for the UI.
+    The frontend draws the line/area chart and computes the cumulative
+    curve itself so it can control visual scaling.
+    """
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    if agg is None:
+        raise ValueError("Run aggregation first.")
+
+    occ = agg["occurence"].values
+    ifp_ids = agg.index.tolist()
+    total_observations = int(np.sum(occ))
+
+    return {
+        "occurrence": [int(v) for v in occ],
+        "ifp_ids": [int(v) for v in ifp_ids],
+        "unique_ifps": len(occ),
+        "total_observations": total_observations,
+        "max_occurrence": int(np.max(occ)) if len(occ) else 0,
+    }
+
+
+def data_clusters(session: IFPSession, ligand: int = 1) -> dict:
+    """Return structural cluster data for client-side linked views.
+
+    Computed in ``run_aggregation`` via the notebook-style groupby on the
+    post-x2 binary df (mirrors notebook 02). The frontend uses
+    ``cluster_id_per_ifp`` to colour the occurrence plot / frame slider
+    by cluster and ``clusters`` to populate the top-binding-modes panel.
+    """
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    if agg is None:
+        raise ValueError("Run aggregation first.")
+    cpi = (session.structure_clusters_2 if ligand == 2
+           else session.structure_clusters)
+    summary = (session.structure_cluster_summary_2 if ligand == 2
+               else session.structure_cluster_summary)
+    return {
+        "cluster_id_per_ifp": cpi or [],
+        "n_clusters": len(summary or []),
+        "clusters": summary or [],
+        "n_ifps": len(agg),
+        "total_frames": int(agg["occurence"].sum()) if len(agg) else 0,
     }
 
 
