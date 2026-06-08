@@ -1120,12 +1120,97 @@ def data_clusters(session: IFPSession, ligand: int = 1) -> dict:
            else session.structure_clusters)
     summary = (session.structure_cluster_summary_2 if ligand == 2
                else session.structure_cluster_summary)
+    # Interaction column names — same order as `pattern` in each cluster,
+    # so the frontend can label per-position tooltips on the pattern strip.
+    int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
     return {
         "cluster_id_per_ifp": cpi or [],
         "n_clusters": len(summary or []),
         "clusters": summary or [],
         "n_ifps": len(agg),
         "total_frames": int(agg["occurence"].sum()) if len(agg) else 0,
+        "interaction_columns": int_cols,
+    }
+
+
+def data_umap(session: IFPSession, ligand: int = 1) -> dict:
+    """UMAP-Einbettung der struktur-aggregierten Cluster + Pfad-Projektion.
+
+    Punkte = Cluster-Pattern (binäre Vektoren, ein Punkt pro Bindungsmodus).
+    Distanzmetrik: Hamming — konsistent zur Distanzmatrix-Ansicht.
+    Pfad: die zeit-aggregierten IFPs in zeitlicher Reihenfolge, projiziert
+    via `transform()` in denselben Raum wie die Cluster-Punkte. Dadurch
+    bewegt sich die Pfadlinie genau durch die Cluster-Punkte (jedes
+    Zeit-Segment fällt auf "seinen" Cluster).
+    """
+    import umap  # lazy: Import von umap ist langsam (~2s)
+
+    agg = session.aggregated_df_2 if ligand == 2 else session.aggregated_df
+    if agg is None:
+        raise ValueError("Run aggregation first.")
+    summary = (session.structure_cluster_summary_2 if ligand == 2
+               else session.structure_cluster_summary)
+    cpi = (session.structure_clusters_2 if ligand == 2
+           else session.structure_clusters)
+    if not summary:
+        return {"clusters": [], "path": [], "n_clusters": 0, "n_ifps": 0}
+
+    int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
+    cluster_matrix = np.array([s["pattern"] for s in summary], dtype=np.uint8)
+    n_clusters = cluster_matrix.shape[0]
+
+    # n_neighbors muss < n_clusters sein und sollte klein bleiben, damit
+    # lokale Struktur erhalten bleibt (bei ~340 Clustern fasst Default 15
+    # bereits ~5% der Daten zusammen → eher zu groß).
+    n_neighbors = max(2, min(10, n_clusters - 1))
+
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        min_dist=0.1,
+        metric="hamming",
+        random_state=42,
+    )
+    cluster_xy = reducer.fit_transform(cluster_matrix)
+
+    clusters_out = []
+    for cid, s in enumerate(summary):
+        clusters_out.append({
+            "cluster_id": int(s["cluster_id"]),
+            "x": float(cluster_xy[cid, 0]),
+            "y": float(cluster_xy[cid, 1]),
+            "frame_count": int(s["frame_count"]),
+            "ifp_count": int(s["ifp_count"]),
+            "n_active": int(s["n_active"]),
+        })
+
+    # Pfad: zeit-aggregierte IFPs in zeitlicher Reihenfolge (Zeilen-Reihenfolge
+    # in agg). Da identische Patterns auf denselben Cluster mappen, fällt der
+    # Pfadpunkt exakt auf den Cluster-Punkt — keine zusätzliche Projektion nötig.
+    # Wir nutzen die Cluster-Koordinaten und nur die cluster_id-Folge.
+    path_out = []
+    for pos, cid in enumerate(cpi or []):
+        if cid is None or cid < 0:
+            continue
+        path_out.append({
+            "ifp_index": int(pos),
+            "cluster_id": int(cid),
+            "x": float(cluster_xy[cid, 0]),
+            "y": float(cluster_xy[cid, 1]),
+        })
+
+    return {
+        "clusters": clusters_out,
+        "path": path_out,
+        "n_clusters": n_clusters,
+        "n_ifps": len(agg),
+        "interaction_columns": int_cols,
+        "params": {
+            "n_neighbors": n_neighbors,
+            "min_dist": 0.1,
+            "metric": "hamming",
+            "random_state": 42,
+        },
     }
 
 
@@ -1210,6 +1295,101 @@ def render_comparison(session: IFPSession) -> dict:
     print(f"[TIMING] render_comparison — TOTAL: {t3 - t0:.3f}s")
 
     return {"image": img}
+
+
+def data_comparison(session: IFPSession) -> dict:
+    """Structured JSON for the interactive six-lane comparison view.
+
+    Reformats the already-computed comparison state (identical/similar
+    classification + cross-distance matrix) into a flat node + edge list.
+    Mirrors the static `render_comparison` plot 1:1, but keeps the data
+    structured so the frontend can render it interactively and link a
+    click back to the per-ligand structural cluster.
+
+    Connection keys follow the "<name_a>_<name_b>" convention emitted by
+    `calculate_where_diff_and_sim`:
+      • "<n1>_<n1>" → within ligand 1   • "<n2>_<n2>" → within ligand 2
+      • "<n1>_<n2>" → between ligands
+    All indices are global indices into the merged frame (ligand 1 rows
+    0..n1-1, ligand 2 rows n1..n1+n2-1), which is exactly how the merge
+    concatenates them.
+    """
+    if (session.identical_ifps is None or session.similar_ifps is None
+            or session.merged_df is None or session.cross_distances is None):
+        raise ValueError("Run comparison first.")
+
+    name1, name2 = session.ligand_name_1, session.ligand_name_2
+    n1 = len(session.aggregated_df)
+    n_total = len(session.merged_df)
+    n2 = n_total - n1
+
+    dist = np.asarray(session.cross_distances)
+    occ = session.merged_df["occurence"].values
+
+    # ── Nodes: one per merged IFP, mapped back to its ligand-local
+    #    structural cluster so a click can drive linked selection. ──
+    sc1 = session.structure_clusters or []
+    sc2 = session.structure_clusters_2 or []
+
+    def _cluster_of(arr, local):
+        if local >= len(arr):
+            return None
+        raw = arr[local]
+        return int(raw) if raw is not None and raw >= 0 else None
+
+    ifps = []
+    for mi in range(n_total):
+        if mi < n1:
+            lig, local = 1, mi
+            cid = _cluster_of(sc1, local)
+        else:
+            lig, local = 2, mi - n1
+            cid = _cluster_of(sc2, local)
+        ifps.append({
+            "merged_index": mi, "lig": lig, "local_index": local,
+            "occurence": int(occ[mi]), "cluster_id": cid,
+        })
+
+    # ── Connections: flatten the category dicts into a single edge list. ──
+    connections = []
+
+    def _emit(entries, category, scope, lig):
+        if not entries:
+            return
+        for key, vals in entries:
+            k = int(key)
+            for v in np.asarray(vals).tolist():
+                v = int(v)
+                connections.append({
+                    "src": k, "dst": v,
+                    "category": category, "scope": scope, "lig": lig,
+                    "distance": float(dist[k][v]),
+                })
+
+    ident, sim = session.identical_ifps, session.similar_ifps
+    _emit(ident.get(f"{name1}_{name1}"), "identical", "within", 1)
+    _emit(sim.get(f"{name1}_{name1}"), "similar", "within", 1)
+    _emit(ident.get(f"{name1}_{name2}"), "identical", "between", 0)
+    _emit(sim.get(f"{name1}_{name2}"), "similar", "between", 0)
+    _emit(ident.get(f"{name2}_{name2}"), "identical", "within", 2)
+    _emit(sim.get(f"{name2}_{name2}"), "similar", "within", 2)
+
+    def _count(cat, scope):
+        return sum(1 for c in connections
+                   if c["category"] == cat and c["scope"] == scope)
+
+    return {
+        "lig1_name": name1, "lig2_name": name2,
+        "n1": int(n1), "n2": int(n2),
+        "ifps": ifps,
+        "connections": connections,
+        "stats": {
+            "identical_between": _count("identical", "between"),
+            "similar_between": _count("similar", "between"),
+            "identical_within": _count("identical", "within"),
+            "similar_within": _count("similar", "within"),
+        },
+    }
 
 
 def load_pdb(session: IFPSession, file_bytes: bytes, filename: str,

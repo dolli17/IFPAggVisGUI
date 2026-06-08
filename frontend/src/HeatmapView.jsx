@@ -66,6 +66,12 @@ export default function HeatmapView({
   data,             // { distances, ifp_ids, occurrence, n, max_distance, min_distance }
   selectedIndex,    // number — currently selected IFP index (a.k.a. networkFrame)
   onSelectIndex,    // (i) => void
+  clusterData,      // optional: cluster payload — drives the axis cluster strips
+  clusterColors,    // optional: buildClusterColors result
+  siblingIndices,   // optional: number[] of IFPs sharing the current cluster
+  matchingIfps,     // optional: Set<number> of IFPs matching residue discovery
+  rangeFilter,      // optional: { start, end } | null — drives auto-zoom
+  onSetRange,       // optional: (start, end) => void — called when user brushes a range
 }) {
   const wrapperRef = useRef(null);
   const canvasRef = useRef(null);
@@ -79,6 +85,16 @@ export default function HeatmapView({
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ tx: 0, ty: 0 });
   const dragRef = useRef(null); // { startX, startY, origTx, origTy }
+  // Mirror of scale/pan in a ref, so the auto-zoom animation can read
+  // the current view without depending on it (which would loop).
+  const viewRef = useRef({ scale: 1, tx: 0, ty: 0 });
+  useEffect(() => {
+    viewRef.current = { scale, tx: pan.tx, ty: pan.ty };
+  }, [scale, pan]);
+  // Brush state — set while user drags to brush a sub-range. Mode
+  // 'range' means "release will trigger onSetRange". Coordinates are
+  // matrix-space cell indices.
+  const [brush, setBrush] = useState(null); // { i0, j0, i1, j1 } | null
 
   // Wrapper resize
   useEffect(() => {
@@ -148,12 +164,27 @@ export default function HeatmapView({
   // Mouse → cell mapping. Coordinates are stored relative to the
   // unzoomed inner area; we subtract the pan offset to get matrix-space
   // coordinates and divide by `cellSize` (already includes zoom).
+  // Helper: clamp matrix coords to a cell index.
+  const clientToCell = (evt) => {
+    if (!geometry) return null;
+    const rect = evt.currentTarget.getBoundingClientRect();
+    const xInner = evt.clientX - rect.left - MARGIN.left;
+    const yInner = evt.clientY - rect.top - MARGIN.top;
+    const xMat = xInner - geometry.tx;
+    const yMat = yInner - geometry.ty;
+    const j = Math.max(0, Math.min(geometry.n - 1,
+      Math.floor(xMat / geometry.cellSize)));
+    const i = Math.max(0, Math.min(geometry.n - 1,
+      Math.floor(yMat / geometry.cellSize)));
+    return { i, j, xInner, yInner };
+  };
+
   const handleMouseMove = (evt) => {
     if (!geometry) return;
     const rect = evt.currentTarget.getBoundingClientRect();
     const xInner = evt.clientX - rect.left - MARGIN.left;
     const yInner = evt.clientY - rect.top - MARGIN.top;
-    // Drag-to-pan
+    // Drag-to-pan (Shift held at mouse-down)
     if (dragRef.current) {
       const d = dragRef.current;
       setPan({
@@ -161,6 +192,13 @@ export default function HeatmapView({
         ty: d.origTy + (yInner - d.startY),
       });
       return;
+    }
+    // Brush-to-zoom — update the brush box's far corner
+    if (brush) {
+      const cell = clientToCell(evt);
+      if (cell) {
+        setBrush(b => b ? { ...b, i1: cell.i, j1: cell.j } : null);
+      }
     }
     // Convert from inner-area to matrix-space (account for pan)
     const xMat = xInner - geometry.tx;
@@ -181,34 +219,129 @@ export default function HeatmapView({
   const handleMouseLeave = () => {
     setHover(null);
     dragRef.current = null;
+    setBrush(null);
   };
 
   const handleMouseDown = (evt) => {
     if (!geometry) return;
-    // Only initialise drag if we're inside the matrix area; small click
-    // movements (< 4 px) still count as a click for selection.
     const rect = evt.currentTarget.getBoundingClientRect();
     const xInner = evt.clientX - rect.left - MARGIN.left;
     const yInner = evt.clientY - rect.top - MARGIN.top;
     if (xInner < 0 || xInner > geometry.innerW
         || yInner < 0 || yInner > geometry.innerH) return;
-    dragRef.current = {
-      startX: xInner, startY: yInner,
-      origTx: geometry.tx, origTy: geometry.ty,
-      moved: false, downX: evt.clientX, downY: evt.clientY,
-    };
+    if (evt.shiftKey) {
+      // Shift+drag = pan (the previous default).
+      dragRef.current = {
+        startX: xInner, startY: yInner,
+        origTx: geometry.tx, origTy: geometry.ty,
+        moved: false, downX: evt.clientX, downY: evt.clientY,
+      };
+    } else if (onSetRange) {
+      // Default = brush to zoom. Start a brush box at the current cell.
+      const cell = clientToCell(evt);
+      if (cell) {
+        setBrush({
+          i0: cell.i, j0: cell.j,
+          i1: cell.i, j1: cell.j,
+          downX: evt.clientX, downY: evt.clientY,
+        });
+      }
+    }
   };
   const handleMouseUp = (evt) => {
     const d = dragRef.current;
     dragRef.current = null;
-    if (!d) return;
-    const dx = Math.abs(evt.clientX - d.downX);
-    const dy = Math.abs(evt.clientY - d.downY);
-    if (dx < 4 && dy < 4 && hover && hover.i === hover.j) {
-      // Treated as a click; UX option (c): only diagonal selects.
+    const b = brush;
+    setBrush(null);
+    // Brush-to-zoom takes priority if it moved enough
+    if (b) {
+      const dx = Math.abs(evt.clientX - b.downX);
+      const dy = Math.abs(evt.clientY - b.downY);
+      if (dx >= 4 || dy >= 4) {
+        const lo = Math.min(b.i0, b.i1, b.j0, b.j1);
+        const hi = Math.max(b.i0, b.i1, b.j0, b.j1);
+        if (hi - lo >= 1) {
+          onSetRange?.(lo, hi);
+          return;
+        }
+      }
+    }
+    if (!d && !b) return;
+    const ref = d || b;
+    const dx = Math.abs(evt.clientX - ref.downX);
+    const dy = Math.abs(evt.clientY - ref.downY);
+    if (dx < 4 && dy < 4 && hover) {
+      // Click on any cell selects the row's IFP — same model as the
+      // occurrence plot and the cluster strip. The diagonal stays the
+      // most obvious target ("self-self distance = 0"), but off-diagonal
+      // clicks now work too: pick IFP i, see its distance row.
       onSelectIndex?.(hover.i);
     }
   };
+
+  // ── Auto-zoom to rangeFilter ──
+  // When the range filter changes (set or cleared), animate scale +
+  // pan so the [start, end] cells fill the inner area. When the
+  // effect runs for any other reason (initial mount, data change,
+  // resize, tab re-mount), we *snap* to the target instead — so
+  // switching tabs or interacting elsewhere doesn't keep replaying
+  // the zoom animation. User Wheel/Shift+Drag still adjust on top
+  // afterwards.
+  const lastRangeRef = useRef({ start: undefined, end: undefined });
+  useEffect(() => {
+    if (!data?.distances?.length) return;
+    const n = data.n || data.distances.length;
+    const innerW = Math.max(80, size.width - MARGIN.left - MARGIN.right);
+    const innerH = Math.max(80, size.height - MARGIN.top - MARGIN.bottom);
+    const baseSide = Math.max(40, Math.min(innerW, innerH));
+    let target;
+    if (rangeFilter) {
+      const rangeSize = rangeFilter.end - rangeFilter.start + 1;
+      const targetScale = n / rangeSize;
+      const targetTx = -rangeFilter.start * (baseSide / rangeSize);
+      target = { scale: targetScale, tx: targetTx, ty: targetTx };
+    } else {
+      target = { scale: 1, tx: 0, ty: 0 };
+    }
+
+    const newStart = rangeFilter?.start ?? null;
+    const newEnd = rangeFilter?.end ?? null;
+    const isFirst = lastRangeRef.current.start === undefined;
+    const rangeChanged = !isFirst
+      && (lastRangeRef.current.start !== newStart
+          || lastRangeRef.current.end !== newEnd);
+    lastRangeRef.current = { start: newStart, end: newEnd };
+
+    if (isFirst || !rangeChanged) {
+      // First mount, data/size change, or tab re-mount: snap.
+      setScale(target.scale);
+      setPan({ tx: target.tx, ty: target.ty });
+      return;
+    }
+    // Snapshot starting view from the ref (sync, no deps loop).
+    const startView = { ...viewRef.current };
+    // Skip if we're already at the target.
+    if (Math.abs(startView.scale - target.scale) < 1e-3
+        && Math.abs(startView.tx - target.tx) < 0.5
+        && Math.abs(startView.ty - target.ty) < 0.5) return;
+    let cancelled = false;
+    let raf;
+    const t0 = performance.now();
+    const duration = 350;
+    const tick = (now) => {
+      if (cancelled) return;
+      const u = Math.min(1, (now - t0) / duration);
+      const e = 1 - Math.pow(1 - u, 3);
+      setScale(startView.scale + (target.scale - startView.scale) * e);
+      setPan({
+        tx: startView.tx + (target.tx - startView.tx) * e,
+        ty: startView.ty + (target.ty - startView.ty) * e,
+      });
+      if (u < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelled = true; cancelAnimationFrame(raf); };
+  }, [rangeFilter?.start, rangeFilter?.end, data, size.width, size.height]);
 
   // Wheel zoom — zoom around the cursor so the cell under the pointer
   // stays put (same trick most map UIs use).
@@ -313,9 +446,10 @@ export default function HeatmapView({
             onWheel={handleWheel}
             style={{
               position: "relative", display: "block",
-              cursor: dragRef.current ? "grabbing"
-                : hover && hover.i === hover.j ? "pointer"
-                : (scale > 1 ? "grab" : "default"),
+              cursor: brush ? "crosshair"
+                : dragRef.current ? "grabbing"
+                : hover ? "crosshair"
+                : "default",
             }}>
             <defs>
               {/* Clip so the inside of the matrix area stays inside */}
@@ -343,7 +477,7 @@ export default function HeatmapView({
                 )}
 
                 {/* Hover cell */}
-                {hover && (
+                {hover && !brush && (
                   <rect
                     x={geometry.tx + hover.j * geometry.cellSize}
                     y={geometry.ty + hover.i * geometry.cellSize}
@@ -352,7 +486,110 @@ export default function HeatmapView({
                     fill="none"
                     stroke={C.text} strokeWidth={1.5} />
                 )}
+
+                {/* Brush-to-zoom box — translucent accent rect shown
+                    while user drags. Indices are taken as the union of
+                    the box's i- and j-range so off-diagonal drags still
+                    map to a single 1-D IFP range. */}
+                {brush && (() => {
+                  const lo = Math.min(brush.i0, brush.i1, brush.j0, brush.j1);
+                  const hi = Math.max(brush.i0, brush.i1, brush.j0, brush.j1);
+                  const x = geometry.tx + lo * geometry.cellSize;
+                  const y = geometry.ty + lo * geometry.cellSize;
+                  const s = (hi - lo + 1) * geometry.cellSize;
+                  return (
+                    <rect x={x} y={y} width={s} height={s}
+                      fill={C.accent} fillOpacity={0.12}
+                      stroke={C.accent} strokeOpacity={0.85}
+                      strokeWidth={1.5}
+                      pointerEvents="none" />
+                  );
+                })()}
               </g>
+
+              {/* ── Cluster strips along both axes (Phase B3) ──
+                  A thin colour-banded strip on the left + top edge of
+                  the matrix. Each cell colours according to its IFP's
+                  cluster, so the user can see *which* IFP-rows/-cols
+                  belong to which binding mode while scanning the matrix.
+                  Sits inside the clip so it pans/zooms with the canvas. */}
+              {clusterData?.cluster_id_per_ifp?.length === geometry.n
+                && clusterColors && (() => {
+                const cids = clusterData.cluster_id_per_ifp;
+                const STRIP_W = 6;
+                const TICK_W = 3;
+                const sibSet = new Set(siblingIndices || []);
+                const matSet = matchingIfps || new Set();
+                return (
+                  <g clipPath="url(#hm-inner-clip)">
+                    {/* Top strip — X axis (column = IFP-j) */}
+                    {cids.map((cid, j) => {
+                      const x = geometry.tx + j * geometry.cellSize;
+                      if (x + geometry.cellSize < 0 || x > geometry.innerW) return null;
+                      return (
+                        <rect key={`tx${j}`}
+                          x={x} y={-STRIP_W - 2}
+                          width={geometry.cellSize} height={STRIP_W}
+                          fill={clusterColors.colorOf(cid)}
+                          shapeRendering="crispEdges" />
+                      );
+                    })}
+                    {/* Left strip — Y axis (row = IFP-i) */}
+                    {cids.map((cid, i) => {
+                      const y = geometry.ty + i * geometry.cellSize;
+                      if (y + geometry.cellSize < 0 || y > geometry.innerH) return null;
+                      return (
+                        <rect key={`ly${i}`}
+                          x={-STRIP_W - 2} y={y}
+                          width={STRIP_W} height={geometry.cellSize}
+                          fill={clusterColors.colorOf(cid)}
+                          shapeRendering="crispEdges" />
+                      );
+                    })}
+                    {/* Sibling ticks — pink mini-ticks on the strips at
+                        each IFP sharing the current cluster. */}
+                    {Array.from(sibSet).map((i) => {
+                      const x = geometry.tx + (i + 0.5) * geometry.cellSize;
+                      const y = geometry.ty + (i + 0.5) * geometry.cellSize;
+                      return (
+                        <g key={`sib${i}`} pointerEvents="none">
+                          {x >= 0 && x <= geometry.innerW && (
+                            <line x1={x} x2={x}
+                              y1={-STRIP_W - 2 - TICK_W} y2={-STRIP_W - 2}
+                              stroke={C.pink} strokeWidth={1.5} />
+                          )}
+                          {y >= 0 && y <= geometry.innerH && (
+                            <line x1={-STRIP_W - 2 - TICK_W} x2={-STRIP_W - 2}
+                              y1={y} y2={y}
+                              stroke={C.pink} strokeWidth={1.5} />
+                          )}
+                        </g>
+                      );
+                    })}
+                    {/* Discovery-match ticks — white. */}
+                    {Array.from(matSet).map((i) => {
+                      const x = geometry.tx + (i + 0.5) * geometry.cellSize;
+                      const y = geometry.ty + (i + 0.5) * geometry.cellSize;
+                      return (
+                        <g key={`m${i}`} pointerEvents="none">
+                          {x >= 0 && x <= geometry.innerW && (
+                            <line x1={x} x2={x}
+                              y1={-2} y2={1}
+                              stroke="#ffffff" strokeOpacity={0.9}
+                              strokeWidth={1.2} />
+                          )}
+                          {y >= 0 && y <= geometry.innerH && (
+                            <line x1={-2} x2={1}
+                              y1={y} y2={y}
+                              stroke="#ffffff" strokeOpacity={0.9}
+                              strokeWidth={1.2} />
+                          )}
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })()}
 
               {/* Frame around the inner area (not the matrix) — stays
                   put while you pan/zoom, marks the chart bounds. */}
@@ -412,16 +649,9 @@ export default function HeatmapView({
                 <text x={8} y={30} fontSize={10} fill={C.accent}>
                   Distanz: {tooltip.dist}
                 </text>
-                {!tooltip.isDiag && (
-                  <text x={8} y={44} fontSize={9} fill={C.textDim}>
-                    (Diagonale klicken zum Auswählen)
-                  </text>
-                )}
-                {tooltip.isDiag && (
-                  <text x={8} y={44} fontSize={9} fill={C.pink}>
-                    Klick: IFP auswählen
-                  </text>
-                )}
+                <text x={8} y={44} fontSize={9} fill={C.pink}>
+                  Klick: IFP #{tooltip.ifpI} auswählen
+                </text>
               </g>
             )}
           </svg>

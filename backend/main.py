@@ -15,7 +15,7 @@ from pipeline import (
     render_comparison, load_pdb, load_trajectory, get_frame_pdb,
     get_session_info, update_parameters,
     data_network, data_occurrence, data_distance_matrix, data_circle,
-    data_clusters,
+    data_clusters, data_umap, data_comparison,
 )
 
 app = FastAPI(title="IFPAggVis GUI Backend", version="0.1.0")
@@ -198,6 +198,15 @@ def api_data_clusters(ligand: int = 1):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/data/umap")
+def api_data_umap(ligand: int = 1):
+    """JSON UMAP-Einbettung der Cluster + Pfad-Folge."""
+    try:
+        return data_umap(session, ligand=ligand)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/viz/circle")
 def api_viz_circle(residue: str = None, ligand: int = 1):
     try:
@@ -226,6 +235,15 @@ def api_viz_occurrence(ligand: int = 1):
 def api_viz_comparison():
     try:
         return render_comparison(session)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/comparison")
+def api_data_comparison():
+    """JSON Six-Lane-Vergleich (interaktiv): Knoten + Verbindungen."""
+    try:
+        return data_comparison(session)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

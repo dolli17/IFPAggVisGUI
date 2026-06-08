@@ -79,6 +79,10 @@ export async function getDataClusters(ligand = 1) {
   return request(`/data/clusters?ligand=${ligand}`);
 }
 
+export async function getDataUmap(ligand = 1) {
+  return request(`/data/umap?ligand=${ligand}`);
+}
+
 export async function getVizCircle(residue = null, ligand = 1) {
   const params = new URLSearchParams({ ligand });
   if (residue) params.append("residue", residue);
@@ -95,6 +99,10 @@ export async function getVizOccurrence(ligand = 1) {
 
 export async function getVizComparison() {
   return request("/viz/comparison");
+}
+
+export async function getDataComparison() {
+  return request("/data/comparison");
 }
 
 export async function updateParameters(params) {

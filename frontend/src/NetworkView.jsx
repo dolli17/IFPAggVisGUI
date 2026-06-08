@@ -185,6 +185,19 @@ export default function NetworkView({
       const additive = !!(oe.metaKey || oe.ctrlKey || oe.shiftKey);
       onSelect?.(n.data("label"), additive);
     });
+    // Edge tap (Phase B3) — selecting an edge is shorthand for selecting
+    // its residue endpoint. Edges run LIG ↔ residue, so we pick whichever
+    // end isn't the ligand.
+    cy.on("tap", "edge", (evt) => {
+      const e = evt.target;
+      const oe = evt.originalEvent || {};
+      const additive = !!(oe.metaKey || oe.ctrlKey || oe.shiftKey);
+      const src = e.source();
+      const tgt = e.target();
+      const resNode = src.data("kind") === "ligand" ? tgt : src;
+      const label = resNode.data("label");
+      if (label) onSelect?.(label, additive);
+    });
     cy.on("tap", (evt) => {
       if (evt.target === cy) onBackgroundClick?.();
     });
@@ -298,7 +311,7 @@ export default function NetworkView({
         {layoutBtn("concentric", "Concentric")}
         {layoutBtn("grid", "Grid")}
         <span style={{ marginLeft: "auto", fontSize: 9, color: C.textDim }}>
-          ⌘/Ctrl+Klick = mehrere
+          Klick Knoten/Kante = Residuum · ⌘/Ctrl+Klick = mehrere
         </span>
         <button onClick={resetLayout}
           style={{

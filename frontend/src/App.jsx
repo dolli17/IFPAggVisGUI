@@ -1,9 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import * as api from "./api";
 import NetworkView from "./NetworkView";
 import OccurrenceView from "./OccurrenceView";
 import HeatmapView from "./HeatmapView";
 import CircleView from "./CircleView";
+import ClusterTableView from "./ClusterTableView";
+import UmapView from "./UmapView";
+import ComparisonView from "./ComparisonView";
+import { buildClusterColors } from "./clusterColors";
 
 // ─── Colors ──────────────────────────────────────────────────────
 const C = {
@@ -28,6 +32,318 @@ function Spinner() {
   return (
     <div style={{ display: "inline-block", width: 16, height: 16, border: `2px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", animation: "spin .6s linear infinite" }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// Cluster strip: thin horizontal band that mirrors the slider, one
+// coloured tick per IFP. Same colours as the OccurrenceView band.
+// Hover = tooltip, click = jump to that frame (or to the cluster's
+// representative if Shift/Cmd/Ctrl).
+function ClusterStrip({
+  cids, clusterColors, selectedClusters,
+  currentFrame, onSelectFrame, onSelectCluster,
+  siblingIndices,    // optional: indices of frames in same cluster as currentFrame
+  matchingIfps,      // optional: Set<number> of IFP indices matching residue discovery
+}) {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(600);
+  const [hoverIdx, setHoverIdx] = useState(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        if (e.contentRect.width > 0) setWidth(e.contentRect.width);
+      }
+    });
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  if (!cids?.length || !clusterColors) return null;
+  const H = 10;
+  const SEL = 4;
+  const innerW = Math.max(20, width);
+  const xOf = (i) => (i / cids.length) * innerW;
+  const wOf = (i) => Math.max(0.5, xOf(i + 1) - xOf(i));
+  const selSet = new Set(selectedClusters || []);
+  const handleMove = (e) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    const xRel = e.clientX - rect.left;
+    const i = Math.max(0, Math.min(cids.length - 1,
+      Math.floor((xRel / innerW) * cids.length)));
+    setHoverIdx(i);
+  };
+  const handleClick = (e) => {
+    if (hoverIdx == null) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      // Cmd/Ctrl/Shift+klick on the strip toggles the cluster in the
+      // selection set — same semantics as cluster band / table row.
+      onSelectCluster?.(cids[hoverIdx], true);
+    } else {
+      onSelectFrame?.(hoverIdx);
+    }
+  };
+  const hovCid = hoverIdx != null ? cids[hoverIdx] : null;
+  const markerX = (currentFrame != null && currentFrame >= 0
+                   && currentFrame < cids.length)
+    ? xOf(currentFrame) + wOf(currentFrame) / 2 : null;
+  // Reserve space above (sibling ticks) and below (discovery marks).
+  const TICK_SPACE = 4;
+  const BELOW_SPACE = 3;
+  return (
+    <div ref={ref} style={{
+      position: "relative", padding: "0 16px 6px",
+    }}>
+      <svg width="100%" height={H + SEL + TICK_SPACE + BELOW_SPACE + 6}
+        style={{ display: "block", cursor: "pointer", overflow: "visible" }}
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHoverIdx(null)}
+        onClick={handleClick}>
+        <g transform={`translate(0, ${SEL / 2 + TICK_SPACE})`}>
+          {cids.map((cid, i) => {
+            const isSel = selSet.has(cid);
+            return (
+              <rect key={i}
+                x={xOf(i)}
+                y={isSel ? -SEL / 2 : 0}
+                width={wOf(i)}
+                height={H + (isSel ? SEL : 0)}
+                fill={clusterColors.colorOf(cid)}
+                shapeRendering="crispEdges" />
+            );
+          })}
+          {/* Discovery-match marks — thin white bar UNDER the strip
+              for every IFP matching the active residue discovery. */}
+          {matchingIfps && matchingIfps.size > 0
+            && Array.from(matchingIfps).map((i) => {
+              if (i < 0 || i >= cids.length) return null;
+              return (
+                <rect key={`m${i}`}
+                  x={xOf(i)} y={H}
+                  width={wOf(i)} height={2}
+                  fill="#ffffff" fillOpacity={0.85}
+                  pointerEvents="none" />
+              );
+            })}
+
+          {/* Sibling-frame ticks — above the strip, one per IFP in the
+              current frame's cluster (except the active one). */}
+          {siblingIndices?.length > 1 && siblingIndices.map((i) => {
+            if (i === currentFrame) return null;
+            if (i < 0 || i >= cids.length) return null;
+            const cx = xOf(i) + wOf(i) / 2;
+            return (
+              <line key={`sib${i}`}
+                x1={cx} x2={cx}
+                y1={-SEL / 2 - 3} y2={-SEL / 2 - 0.5}
+                stroke={C.pink} strokeWidth={1.2}
+                pointerEvents="none" />
+            );
+          })}
+
+          {markerX != null && (
+            <line x1={markerX} x2={markerX}
+              y1={-SEL / 2 - 1} y2={H + SEL / 2 + 1}
+              stroke={C.pink} strokeWidth={1.5} />
+          )}
+        </g>
+      </svg>
+      {hoverIdx != null && hovCid != null && (
+        <div style={{
+          position: "absolute", left: 16, top: -4,
+          transform: "translateY(-100%)",
+          background: C.bg, border: `1px solid ${clusterColors.colorOf(hovCid)}`,
+          padding: "3px 7px", borderRadius: 4, fontSize: 10,
+          color: C.text, pointerEvents: "none", whiteSpace: "nowrap",
+          zIndex: 10,
+        }}>
+          IFP #{hoverIdx} · Cluster {hovCid}
+          <span style={{ color: C.textDim, marginLeft: 6 }}>
+            Klick = Frame · ⌘/Ctrl+Klick = Cluster
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SelectionStatusBar — sticky bar under the tab strip, only visible
+// when *something* is selected. Centralises the answer to "what am I
+// looking at right now?" so the user never has to scan four panels to
+// find their selection state. Each pill has an "×" to remove that
+// particular axis without affecting the others.
+function SelectionStatusBar({
+  residues,                  // string[]
+  onRemoveResidue,
+  onClearResidues,
+  discoveryMode,             // "AND" | "OR"
+  onToggleDiscoveryMode,
+  matchingIfpsCount,         // number | null
+  matchingClustersCount,     // number | null
+  selectedClusters,          // number[]
+  onRemoveCluster,
+  clusterColors,
+  currentFrame,
+  totalFrames,
+  onClearFrame,
+  rangeFilter,               // { start, end } | null
+  onClearRange,
+  onClearAll,
+}) {
+  const anyResidue = residues.length > 0;
+  const anyCluster = selectedClusters.length > 0;
+  const anyRange = rangeFilter != null;
+  const hasFrameInfo = currentFrame != null && totalFrames > 0;
+  if (!anyResidue && !anyCluster && !anyRange) {
+    // Compact hint bar when nothing is selected — explains the three axes
+    return null;
+  }
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start",
+      gap: 10, padding: "6px 16px",
+      background: C.surfaceLight,
+      borderBottom: `1px solid ${C.border}`,
+      fontSize: 11,
+    }}>
+      <span style={{ color: C.textDim, fontWeight: 600, flexShrink: 0, paddingTop: 2 }}>
+        🔎 Aktiv:
+      </span>
+      {/* Scrollbarer Pill-Bereich — kappt die Höhe bei vielen Pills (z.B.
+          viele Cluster), damit die Visualisierungen darunter nicht gestaucht
+          werden. Inhalt scrollt vertikal, "Alles löschen" bleibt fixiert. */}
+      <div style={{
+        flex: 1, display: "flex", alignItems: "center", flexWrap: "wrap",
+        gap: 10, maxHeight: 60, overflowY: "auto",
+      }}>
+
+      {/* Residue pills */}
+      {anyResidue && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+          {residues.map((r) => (
+            <span key={r} style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "2px 4px 2px 8px", borderRadius: 10,
+              background: C.pinkDim, color: C.pink,
+              border: `1px solid ${C.pink}`,
+              fontSize: 10, fontWeight: 600,
+            }}>
+              {r}
+              <span onClick={() => onRemoveResidue(r)}
+                style={{
+                  cursor: "pointer", padding: "0 4px", fontSize: 12,
+                  lineHeight: 1, opacity: 0.8,
+                }} title="Residuum entfernen">×</span>
+            </span>
+          ))}
+          {residues.length > 1 && (
+            <button onClick={onToggleDiscoveryMode}
+              title={`Modus wechseln — ${discoveryMode === "AND" ? "alle Residuen müssen vorkommen" : "mindestens eine Residuum"}`}
+              style={{
+                padding: "2px 8px", borderRadius: 4,
+                background: discoveryMode === "AND" ? C.accent : C.pink,
+                color: "#fff", border: "none", cursor: "pointer",
+                fontSize: 10, fontWeight: 600,
+              }}>
+              {discoveryMode}
+            </button>
+          )}
+          {matchingIfpsCount != null && (
+            <span style={{ color: C.text, fontSize: 10 }}>
+              {" → "}
+              <span style={{ color: C.pink, fontWeight: 600 }}>
+                {matchingIfpsCount}
+              </span>
+              {" IFPs in "}
+              <span style={{ color: C.pink, fontWeight: 600 }}>
+                {matchingClustersCount}
+              </span>
+              {" Clustern"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Vertical separator */}
+      {anyResidue && anyCluster && (
+        <span style={{ color: C.border, fontSize: 14 }}>│</span>
+      )}
+
+      {/* Cluster pills */}
+      {anyCluster && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+          <span style={{ color: C.textDim, fontSize: 10 }}>Cluster:</span>
+          {selectedClusters.map((cid) => (
+            <span key={cid} style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "2px 4px 2px 6px", borderRadius: 10,
+              background: clusterColors?.colorOf(cid) || C.surface,
+              color: "#fff", fontSize: 10, fontWeight: 600,
+              border: "1px solid rgba(255,255,255,0.2)",
+            }}>
+              {cid}
+              <span onClick={() => onRemoveCluster(cid)}
+                style={{
+                  cursor: "pointer", padding: "0 4px", fontSize: 12,
+                  lineHeight: 1, opacity: 0.8,
+                }} title="Cluster entfernen">×</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Range filter pill */}
+      {anyRange && (
+        <>
+          {(anyResidue || anyCluster) && (
+            <span style={{ color: C.border, fontSize: 14 }}>│</span>
+          )}
+          <span style={{
+            display: "inline-flex", alignItems: "center", gap: 4,
+            padding: "2px 4px 2px 8px", borderRadius: 10,
+            background: "rgba(108,123,212,0.15)", color: C.accent,
+            border: `1px solid ${C.accent}`,
+            fontSize: 10, fontWeight: 600,
+          }}
+          title="Aktiver IFP-Bereich (Brush in Vorkommen oder Distanzmatrix)">
+            IFPs {rangeFilter.start}–{rangeFilter.end}
+            {" "}
+            <span style={{ color: C.textMuted, fontWeight: 400 }}>
+              ({rangeFilter.end - rangeFilter.start + 1})
+            </span>
+            <span onClick={onClearRange}
+              style={{
+                cursor: "pointer", padding: "0 4px", fontSize: 12,
+                lineHeight: 1, opacity: 0.85,
+              }} title="Bereichsfilter entfernen">×</span>
+          </span>
+        </>
+      )}
+
+      {/* Frame info */}
+      {hasFrameInfo && (anyResidue || anyCluster || anyRange) && (
+        <>
+          <span style={{ color: C.border, fontSize: 14 }}>│</span>
+          <span style={{ color: C.textDim, fontSize: 10 }}>
+            Frame: <span style={{ color: C.accent, fontWeight: 600 }}>{currentFrame}</span>
+            <span style={{ color: C.textMuted }}>/{totalFrames - 1}</span>
+          </span>
+        </>
+      )}
+
+      </div>
+
+      <button onClick={onClearAll}
+        title="Alle Selektionen zurücksetzen"
+        style={{
+          padding: "2px 10px", borderRadius: 4,
+          background: "transparent", color: C.textDim,
+          border: `1px solid ${C.border}`, cursor: "pointer",
+          fontSize: 10, fontWeight: 600, flexShrink: 0,
+        }}>
+        ✕ Alles löschen
+      </button>
     </div>
   );
 }
@@ -176,6 +492,196 @@ export default function App() {
       return [...prev, label];
     });
   }, []);
+
+  // Structural cluster selection — third linked-view axis alongside
+  // highlightResidues and networkFrame. Selecting a cluster propagates:
+  //   - networkFrame ← cluster.representative_ifp (drives 3D viewer too)
+  //   - highlightResidues ← cluster.active_residues (drives circle/network highlight)
+  const [selectedClusters, setSelectedClusters] = useState([]);
+  // Pending cross-ligand selection from the comparison view: when an IFP
+  // of the *other* ligand is clicked we first switch activeLigand + load
+  // its cluster payload, then apply the selection once that data is ready.
+  const [pendingClusterSelect, setPendingClusterSelect] = useState(null);
+  // Residue-discovery mode: AND = cluster must contain *all* highlighted
+  // residues, OR = at least one. Default AND (more selective).
+  const [discoveryMode, setDiscoveryMode] = useState("AND");
+
+  // Range-Filter (Phase B5) — { start, end } | null.
+  // Set when the user brushes a range on the occurrence plot or
+  // distance matrix. Everything downstream (occurrence/heatmap zoom,
+  // frame slider clamp, cluster table filter) reads this. Cleared via
+  // the status-bar × pill.
+  const [rangeFilter, setRangeFilter] = useState(null);
+  const clearRangeFilter = useCallback(() => setRangeFilter(null), []);
+  const applyRangeFilter = useCallback((start, end) => {
+    if (start == null || end == null) { setRangeFilter(null); return; }
+    const lo = Math.max(0, Math.min(start, end) | 0);
+    const hi = Math.max(start, end) | 0;
+    if (hi - lo < 1) { setRangeFilter(null); return; }
+    setRangeFilter({ start: lo, end: hi });
+    // Pull networkFrame into the range if it sits outside, so the
+    // 3D viewer doesn't keep showing a frame the user just zoomed away
+    // from. Set inside the callback so we don't subscribe to
+    // networkFrame in deps.
+    setNetworkFrame(f => {
+      if (f >= lo && f <= hi) return f;
+      return lo;
+    });
+  }, []);
+
+  // Resolve cluster colours for the active ligand's cluster payload.
+  // Memoised so the (Hamming + HSL-shift) ramp only runs when the
+  // cluster data actually changes, not on every keystroke.
+  const clusterData = vizData[`clusters_${activeLigand}`];
+  const clusterColors = useMemo(
+    () => buildClusterColors(clusterData?.clusters),
+    [clusterData],
+  );
+
+  // Filtered cluster data for ClusterTableView when a range filter is
+  // active. Filters clusters to those that have ≥1 IFP in the range
+  // and *recomputes* per-cluster frame_count / frame_fraction /
+  // ifp_count / ifp_indices / n_active etc. on the range — so the
+  // cluster table reflects "what binding modes are dominant within
+  // this window?" instead of trajectory-global totals.
+  // Occurrence values per IFP come from the occurrence payload; if
+  // it's not loaded yet we fall back to ifp-count as the frame proxy
+  // so the table still renders sanely.
+  const filteredClusterData = useMemo(() => {
+    if (!rangeFilter || !clusterData) return clusterData;
+    const { start, end } = rangeFilter;
+    const cpi = clusterData.cluster_id_per_ifp || [];
+    const occ = vizData[`occurrence_${activeLigand}`]?.occurrence || null;
+    // Tally IFP indices per cluster within [start, end]
+    const perCluster = new Map();
+    let totalFrames = 0;
+    for (let i = start; i <= end && i < cpi.length; i++) {
+      const cid = cpi[i];
+      if (cid == null || cid < 0) continue;
+      const w = occ ? (occ[i] || 0) : 1;
+      totalFrames += w;
+      let entry = perCluster.get(cid);
+      if (!entry) {
+        entry = { ifp_indices: [], frame_count: 0 };
+        perCluster.set(cid, entry);
+      }
+      entry.ifp_indices.push(i);
+      entry.frame_count += w;
+    }
+    // Build cluster summaries, keeping the original sort order
+    // (frame_count desc within the range).
+    const out = [];
+    for (const c of clusterData.clusters) {
+      const e = perCluster.get(c.cluster_id);
+      if (!e) continue;
+      out.push({
+        ...c,
+        ifp_indices: e.ifp_indices,
+        ifp_count: e.ifp_indices.length,
+        frame_count: e.frame_count,
+        frame_fraction: totalFrames ? e.frame_count / totalFrames : 0,
+        representative_ifp: e.ifp_indices[0],
+      });
+    }
+    out.sort((a, b) => b.frame_count - a.frame_count);
+    return {
+      ...clusterData,
+      clusters: out,
+      n_clusters: out.length,
+      total_frames: totalFrames,
+      n_ifps: end - start + 1,
+      // cluster_id_per_ifp + interaction_columns stay global — they
+      // are used by other views for absolute IFP-index positioning.
+    };
+  }, [clusterData, rangeFilter, vizData, activeLigand]);
+
+  // ── Sibling frames in the same structural cluster as the current
+  // frame. Derived; no state. Used to mark "the other Frames that
+  // share this binding mode" in OccurrenceView, the cluster strip,
+  // and the frame-slider status line. Empty if there's no cluster
+  // data yet or the cluster is a singleton.
+  const currentClusterId = clusterData?.cluster_id_per_ifp?.[networkFrame] ?? null;
+  const currentClusterSiblings = useMemo(() => {
+    if (currentClusterId == null || !clusterData?.clusters) return null;
+    return clusterData.clusters[currentClusterId]?.ifp_indices ?? null;
+  }, [clusterData, currentClusterId]);
+  // Position of the current frame within the sibling list (1-based for
+  // display), and convenience handlers for "previous/next sibling".
+  const siblingPos = useMemo(() => {
+    if (!currentClusterSiblings) return null;
+    const i = currentClusterSiblings.indexOf(networkFrame);
+    return i < 0 ? null : i;
+  }, [currentClusterSiblings, networkFrame]);
+  const jumpSibling = useCallback((dir) => {
+    if (!currentClusterSiblings?.length || siblingPos == null) return;
+    const n = currentClusterSiblings.length;
+    const next = (siblingPos + dir + n) % n;
+    setNetworkFrame(currentClusterSiblings[next]);
+  }, [currentClusterSiblings, siblingPos]);
+
+  // ── Residue discovery (Phase B2b) ──
+  // When the user has selected one or more residues, derive which IFPs
+  // and clusters actually contain (all/any of) them. These drive the
+  // "matching" outlines in Occurrence/Slider/Cluster-Table — the user
+  // can then see *where* in the trajectory their residues of interest
+  // co-occur. Memoised on (residues, clusters, mode).
+  const matchingClusters = useMemo(() => {
+    if (!clusterData?.clusters?.length || !highlightResidues.length) {
+      return null;
+    }
+    const wanted = highlightResidues;
+    const test = discoveryMode === "AND"
+      ? (resList) => wanted.every(r => resList.includes(r))
+      : (resList) => wanted.some(r => resList.includes(r));
+    const out = new Set();
+    for (const c of clusterData.clusters) {
+      if (test(c.active_residues || [])) out.add(c.cluster_id);
+    }
+    return out;
+  }, [clusterData, highlightResidues, discoveryMode]);
+
+  const matchingIfps = useMemo(() => {
+    if (!matchingClusters || !clusterData?.cluster_id_per_ifp) return null;
+    const out = new Set();
+    const cpi = clusterData.cluster_id_per_ifp;
+    for (let i = 0; i < cpi.length; i++) {
+      if (matchingClusters.has(cpi[i])) out.add(i);
+    }
+    return out;
+  }, [matchingClusters, clusterData]);
+
+  // Click on a cluster (band segment / slider strip / table row)
+  // - plain click       → replace selection with [cid] AND drive the
+  //                       frame view to that cluster's representative IFP
+  // - Cmd/Ctrl/Shift+   → toggle cid in the cluster selection set
+  //   click                (compare mode); frame stays put
+  //
+  // Residue-Discovery (`highlightResidues`) is *explicitly not* triggered
+  // by a cluster click anymore. Earlier behaviour auto-highlighted the
+  // cluster's active_residues, which then made matchingIfps light up IFPs
+  // belonging to *other* clusters that happened to share/superset those
+  // residues — visually conflating "IFPs in this cluster" with "IFPs
+  // anywhere that share these residues". Discovery is now a separate
+  // workflow driven explicitly via the residue cloud / network clicks.
+  const selectCluster = useCallback((cid, additive) => {
+    if (cid == null || cid < 0) {
+      setSelectedClusters([]);
+      return;
+    }
+    if (additive) {
+      setSelectedClusters(prev =>
+        prev.includes(cid) ? prev.filter(x => x !== cid) : [...prev, cid]);
+      return;
+    }
+    if (!clusterData?.clusters) return;
+    const cluster = clusterData.clusters[cid];
+    if (!cluster) return;
+    setSelectedClusters([cid]);
+    setHighlightResidues([]);
+    if (cluster.representative_ifp != null) {
+      setNetworkFrame(cluster.representative_ifp);
+    }
+  }, [clusterData]);
 
   // ── Parameter state (local, synced on change) ──
   const [params, setParams] = useState({
@@ -373,7 +879,15 @@ export default function App() {
           data = await api.getDataOccurrence(lig);
           break;
         case "comparison":
-          data = await api.getVizComparison();
+          data = await api.getDataComparison();
+          break;
+        case "clusters":
+          // Structural-aggregation payload: per-IFP cluster id +
+          // per-cluster summary (frame_count, ifp_indices, etc).
+          data = await api.getDataClusters(lig);
+          break;
+        case "umap":
+          data = await api.getDataUmap(lig);
           break;
       }
       if (data) {
@@ -382,6 +896,35 @@ export default function App() {
       return data;
     });
   }, []);
+
+  // ── Linked selection from the comparison view ──
+  // The comparison shows both ligands, but selectedClusters / clusterData
+  // are scoped to a single activeLigand. A click on an IFP therefore
+  // selects its structural cluster *and* switches activeLigand to that
+  // IFP's ligand, deferring the actual selection until the target
+  // cluster payload has loaded.
+  const selectComparisonIfp = useCallback((lig, cid, additive) => {
+    if (cid == null || cid < 0) return;
+    const ck = `clusters_${lig}`;
+    if (!vizData[ck]) loadViz("clusters", { ligand: lig });
+    if (lig !== activeLigand) setActiveLigand(lig);
+    if (lig === activeLigand && vizData[ck]?.clusters) {
+      selectCluster(cid, additive);
+    } else {
+      setPendingClusterSelect({ lig, cid, additive });
+    }
+  }, [vizData, activeLigand, loadViz, selectCluster]);
+
+  // Apply a pending cross-ligand selection once its ligand is active and
+  // the cluster payload has arrived.
+  useEffect(() => {
+    if (!pendingClusterSelect) return;
+    const { lig, cid, additive } = pendingClusterSelect;
+    if (lig !== activeLigand) return;
+    if (!vizData[`clusters_${lig}`]?.clusters) return;
+    selectCluster(cid, additive);
+    setPendingClusterSelect(null);
+  }, [pendingClusterSelect, activeLigand, vizData, selectCluster]);
 
   // Load viz when tab/ligand/viewMode changes (if aggregation is done)
   useEffect(() => {
@@ -398,7 +941,9 @@ export default function App() {
       // Overview shows all four viz at once — pre-load every cache key
       // that's still empty. Fires in parallel; loadViz tracks its own
       // loading state per viz so the UI stays consistent.
-      for (const t of ["network", "circle", "heatmap", "occurrence"]) {
+      // `clusters` is fetched alongside so the occurrence panel and the
+      // frame slider can colour-band by structural cluster.
+      for (const t of ["network", "circle", "heatmap", "occurrence", "clusters"]) {
         const ck = `${t}_${activeLigand}`;
         if (!vizData[ck]) {
           loadViz(t, { frame: networkFrame, ligand: activeLigand });
@@ -406,9 +951,28 @@ export default function App() {
       }
       return;
     }
+    // The dedicated cluster tab is the only place where the cluster
+    // payload IS the primary cache key. For the other tabs cluster
+    // data is auxiliary (band/strip colouring), so load it alongside.
+    if (tab === "clusters") {
+      const ck = `clusters_${activeLigand}`;
+      if (!vizData[ck]) {
+        loadViz("clusters", { ligand: activeLigand });
+      }
+      return;
+    }
     const cacheKey = `${tab}_${activeLigand}`;
     if (!vizData[cacheKey]) {
       loadViz(tab, { frame: networkFrame, ligand: activeLigand });
+    }
+    // Cluster data is also needed for the occurrence tab and the network
+    // tab's frame-slider strip. Cheap; load in parallel if missing.
+    if (tab === "occurrence" || tab === "network" || tab === "heatmap"
+        || tab === "umap") {
+      const ck = `clusters_${activeLigand}`;
+      if (!vizData[ck]) {
+        loadViz("clusters", { ligand: activeLigand });
+      }
     }
   }, [tab, session, activeLigand, viewMode]);
 
@@ -488,6 +1052,8 @@ export default function App() {
     { id: "circle", label: "Kreisdiagramm" },
     { id: "heatmap", label: "Distanzmatrix" },
     { id: "occurrence", label: "Vorkommen" },
+    { id: "clusters", label: "Cluster" },
+    { id: "umap", label: "UMAP-Karte" },
   ];
 
   // Current cache key for the active viz
@@ -845,6 +1411,34 @@ export default function App() {
             </div>
           )}
 
+          {/* Selection status bar (Phase B2b) — sticky reminder of what
+              is currently selected across all three axes, with controls
+              to clear each axis individually. */}
+          {viewMode === "ligand" && hasAgg && (
+            <SelectionStatusBar
+              residues={highlightResidues}
+              onRemoveResidue={(r) => setHighlightResidues(prev => prev.filter(x => x !== r))}
+              onClearResidues={() => setHighlightResidues([])}
+              discoveryMode={discoveryMode}
+              onToggleDiscoveryMode={() => setDiscoveryMode(m => m === "AND" ? "OR" : "AND")}
+              matchingIfpsCount={matchingIfps?.size ?? null}
+              matchingClustersCount={matchingClusters?.size ?? null}
+              selectedClusters={selectedClusters}
+              onRemoveCluster={(cid) => setSelectedClusters(prev => prev.filter(x => x !== cid))}
+              clusterColors={clusterColors}
+              currentFrame={networkFrame}
+              totalFrames={clusterData?.n_ifps ?? 0}
+              onClearFrame={() => setNetworkFrame(0)}
+              rangeFilter={rangeFilter}
+              onClearRange={clearRangeFilter}
+              onClearAll={() => {
+                setHighlightResidues([]);
+                setSelectedClusters([]);
+                clearRangeFilter();
+              }}
+            />
+          )}
+
           {/* Viz controls bar — frame slider for network AND overview tab.
               The overview shows the network as one of four panels, so the
               frame slider must be reachable there too; both tabs read
@@ -855,11 +1449,48 @@ export default function App() {
             <div style={{ borderBottom: `1px solid ${C.border}`, background: C.surface }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px" }}>
                 <span style={{ fontSize: 11, color: C.textDim, flexShrink: 0 }}>Frame:</span>
-                <input type="range" min={0} max={(vizData[`network_${activeLigand}`].total_frames || 1) - 1}
+                <input type="range"
+                  min={rangeFilter?.start ?? 0}
+                  max={rangeFilter?.end
+                       ?? ((vizData[`network_${activeLigand}`].total_frames || 1) - 1)}
                   value={networkFrame}
                   onChange={e => setNetworkFrame(Number(e.target.value))}
-                  style={{ flex: 1 }} />
+                  style={{ flex: 1,
+                           accentColor: rangeFilter ? C.accent : undefined }} />
                 <span style={{ fontSize: 11, color: C.accent, fontWeight: 600, minWidth: 40, flexShrink: 0 }}>{networkFrame}</span>
+                {rangeFilter && (
+                  <span style={{
+                    fontSize: 10, color: C.accent, fontWeight: 600,
+                    flexShrink: 0,
+                    padding: "1px 6px", borderRadius: 4,
+                    background: "rgba(108,123,212,0.15)",
+                    border: `1px solid ${C.accent}`,
+                  }} title="Slider auf gefilterten Bereich beschränkt">
+                    [{rangeFilter.start}–{rangeFilter.end}]
+                  </span>
+                )}
+                {/* Sibling navigation — only when the current frame has
+                    more than one cluster mate. Wraps around. */}
+                {currentClusterSiblings?.length > 1 && (
+                  <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                    <div onClick={() => jumpSibling(-1)}
+                      title="Vorheriger Frame im selben Cluster"
+                      style={{
+                        padding: "3px 7px", borderRadius: 4, fontSize: 10,
+                        background: C.pinkDim, color: C.pink,
+                        border: `1px solid ${C.pink}`, cursor: "pointer",
+                        fontWeight: 600, lineHeight: 1,
+                      }}>◀</div>
+                    <div onClick={() => jumpSibling(+1)}
+                      title="Nächster Frame im selben Cluster"
+                      style={{
+                        padding: "3px 7px", borderRadius: 4, fontSize: 10,
+                        background: C.pinkDim, color: C.pink,
+                        border: `1px solid ${C.pink}`, cursor: "pointer",
+                        fontWeight: 600, lineHeight: 1,
+                      }}>▶</div>
+                  </div>
+                )}
                 <Btn small onClick={async () => {
                   const result = await loadViz("network", { frame: networkFrame, ligand: activeLigand });
                   // Reset 3D frame state so slider syncs to new IFP range
@@ -872,6 +1503,47 @@ export default function App() {
                   {loading.viz_network ? <Spinner /> : "Laden"}
                 </Btn>
               </div>
+              {/* Cluster status line — visible whenever the current
+                  frame has a cluster assignment. Tells the user which
+                  binding mode they're in and how many sibling frames
+                  share it. */}
+              {currentClusterId != null && clusterColors && (
+                <div style={{
+                  padding: "2px 16px 4px", fontSize: 10,
+                  color: C.textDim, display: "flex", gap: 8,
+                  alignItems: "center",
+                }}>
+                  <span style={{
+                    display: "inline-block", width: 9, height: 9,
+                    borderRadius: 2,
+                    background: clusterColors.colorOf(currentClusterId),
+                  }} />
+                  <span>Cluster {currentClusterId}</span>
+                  {currentClusterSiblings?.length > 1 && siblingPos != null && (
+                    <span style={{ color: C.pink, fontWeight: 600 }}>
+                      {siblingPos + 1}/{currentClusterSiblings.length} Geschwister
+                    </span>
+                  )}
+                  {currentClusterSiblings?.length === 1 && (
+                    <span style={{ color: C.textMuted }}>(einziges IFP)</span>
+                  )}
+                </div>
+              )}
+              {/* Cluster strip under the frame slider — same colour
+                  encoding as the occurrence-plot band. Each IFP is one
+                  thin rect; click jumps to that frame. */}
+              {clusterData?.cluster_id_per_ifp?.length > 0 && (
+                <ClusterStrip
+                  cids={clusterData.cluster_id_per_ifp}
+                  clusterColors={clusterColors}
+                  selectedClusters={selectedClusters}
+                  currentFrame={networkFrame}
+                  onSelectFrame={(i) => setNetworkFrame(i)}
+                  onSelectCluster={selectCluster}
+                  siblingIndices={currentClusterSiblings}
+                  matchingIfps={matchingIfps}
+                />
+              )}
               {vizData[`network_${activeLigand}`].mapped_frame && (
                 <div style={{ padding: "2px 16px 4px", fontSize: 10, color: C.textMuted, display: "flex", gap: 12 }}>
                   <span>CSV-Frames: {vizData[`network_${activeLigand}`].mapped_frame.csv_start}–{vizData[`network_${activeLigand}`].mapped_frame.csv_end}</span>
@@ -912,10 +1584,15 @@ export default function App() {
                 <div style={{ fontSize: 12, color: C.textDim, marginTop: 8 }}>Visualisierung wird berechnet...</div>
               </div>
             ) : viewMode === "comparison" ? (
-              vizData.comparison?.image ? (
-                <img src={`data:image/png;base64,${vizData.comparison.image}`}
-                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }}
-                  alt="comparison" />
+              vizData.comparison?.ifps ? (
+                <div style={{ width: "100%", height: "100%", position: "relative" }}>
+                  <ComparisonView
+                    data={vizData.comparison}
+                    selectedClusters={selectedClusters}
+                    activeLigand={activeLigand}
+                    onSelectIfp={selectComparisonIfp}
+                  />
+                </div>
               ) : (
                 <div style={{ textAlign: "center" }}>
                   <div style={{ fontSize: 14, color: C.textDim }}>
@@ -998,6 +1675,12 @@ export default function App() {
                           data={heatData}
                           selectedIndex={networkFrame}
                           onSelectIndex={(i) => setNetworkFrame(i)}
+                          clusterData={clusterData}
+                          clusterColors={clusterColors}
+                          siblingIndices={currentClusterSiblings}
+                          matchingIfps={matchingIfps}
+                          rangeFilter={rangeFilter}
+                          onSetRange={applyRangeFilter}
                         />
                       ) : (
                         <div style={{ padding: 16, fontSize: 11,
@@ -1011,6 +1694,14 @@ export default function App() {
                           data={occData}
                           selectedIndex={networkFrame}
                           onSelectIndex={(i) => setNetworkFrame(i)}
+                          clusterData={clusterData}
+                          clusterColors={clusterColors}
+                          selectedClusters={selectedClusters}
+                          onSelectCluster={selectCluster}
+                          siblingIndices={currentClusterSiblings}
+                          matchingIfps={matchingIfps}
+                          rangeFilter={rangeFilter}
+                          onSetRange={applyRangeFilter}
                         />
                       ) : (
                         <div style={{ padding: 16, fontSize: 11,
@@ -1037,6 +1728,13 @@ export default function App() {
                   data={vizData[currentCacheKey]}
                   selectedIndex={networkFrame}
                   onSelectIndex={(i) => setNetworkFrame(i)}
+                  clusterData={clusterData}
+                  clusterColors={clusterColors}
+                  selectedClusters={selectedClusters}
+                  onSelectCluster={selectCluster}
+                  siblingIndices={currentClusterSiblings}
+                  rangeFilter={rangeFilter}
+                  onSetRange={applyRangeFilter}
                 />
               </div>
             ) : tab === "heatmap" && vizData[currentCacheKey]?.distances ? (
@@ -1046,6 +1744,12 @@ export default function App() {
                   data={vizData[currentCacheKey]}
                   selectedIndex={networkFrame}
                   onSelectIndex={(i) => setNetworkFrame(i)}
+                  clusterData={clusterData}
+                  clusterColors={clusterColors}
+                  siblingIndices={currentClusterSiblings}
+                  matchingIfps={matchingIfps}
+                  rangeFilter={rangeFilter}
+                  onSetRange={applyRangeFilter}
                 />
               </div>
             ) : tab === "circle" && vizData[currentCacheKey]?.rings_by_residue ? (
@@ -1056,6 +1760,33 @@ export default function App() {
                   data={vizData[currentCacheKey]}
                   selectedLabels={highlightResidues}
                   onSelect={(label, additive) => selectResidue(label, additive)}
+                />
+              </div>
+            ) : tab === "clusters" && clusterData?.clusters ? (
+              // Cluster tab (Phase B2): sortable table of all structural
+              // clusters. Row click goes through the shared `selectCluster`
+              // helper → drives 3D viewer, residue highlights, occurrence
+              // band selection.
+              <div style={{ width: "100%", height: "100%" }}>
+                <ClusterTableView
+                  data={filteredClusterData}
+                  clusterColors={clusterColors}
+                  selectedClusters={selectedClusters}
+                  onSelectCluster={selectCluster}
+                  currentClusterId={currentClusterId}
+                  matchingClusters={matchingClusters}
+                  highlightResidues={highlightResidues}
+                  onToggleResidue={(r) => selectResidue(r, true)}
+                />
+              </div>
+            ) : tab === "umap" && vizData[currentCacheKey]?.clusters ? (
+              <div style={{ width: "100%", height: "100%" }}>
+                <UmapView
+                  data={vizData[currentCacheKey]}
+                  clusterColors={clusterColors}
+                  selectedClusters={selectedClusters}
+                  onSelectCluster={selectCluster}
+                  currentClusterId={currentClusterId}
                 />
               </div>
             ) : vizData[currentCacheKey]?.image ? (
@@ -1087,15 +1818,41 @@ export default function App() {
 
         {/* ════════ RIGHT: 3D Viewer ════════ */}
         <div style={{ width: viewerWidth, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>3D Viewer</span>
-            {highlightResidues.length > 0 && (
-              <span style={{ fontSize: 10, color: C.pink, fontWeight: 600 }}>
-                {highlightResidues.length === 1
-                  ? highlightResidues[0]
-                  : `${highlightResidues.length} Residuen`}
-              </span>
-            )}
+          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.text, flexShrink: 0 }}>3D Viewer</span>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, minWidth: 0 }}>
+              {/* Cluster info — visible whenever the current frame has
+                  a cluster assignment. Mirrors the slider status line so
+                  the user sees the binding-mode context next to the 3D
+                  structure too. */}
+              {currentClusterId != null && clusterColors && (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  fontSize: 10, color: C.textDim,
+                  maxWidth: "100%", overflow: "hidden",
+                }}>
+                  <span style={{
+                    display: "inline-block", width: 8, height: 8,
+                    borderRadius: 2,
+                    background: clusterColors.colorOf(currentClusterId),
+                    flexShrink: 0,
+                  }} />
+                  <span style={{ whiteSpace: "nowrap" }}>
+                    Cl {currentClusterId} · IFP {networkFrame}
+                    {currentClusterSiblings?.length > 1 && siblingPos != null && (
+                      ` (${siblingPos + 1}/${currentClusterSiblings.length})`
+                    )}
+                  </span>
+                </div>
+              )}
+              {highlightResidues.length > 0 && (
+                <span style={{ fontSize: 10, color: C.pink, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+                  {highlightResidues.length === 1
+                    ? highlightResidues[0]
+                    : `${highlightResidues.length} Residuen`}
+                </span>
+              )}
+            </div>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             {pdbData ? (
