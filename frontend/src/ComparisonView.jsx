@@ -17,6 +17,7 @@
 // anderen Tabs (Cross-Ligand: schaltet ggf. den aktiven Liganden um).
 // ═══════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useRef, useState } from "react";
+import { VizFrame, Swatch, Note } from "./comparison/VizChrome";
 
 const C = {
   bg: "#0f1117",
@@ -81,8 +82,7 @@ export default function ComparisonView({
   }, []);
 
   const { width, height } = size;
-  const toolbarH = 34;
-  const plotH = height - toolbarH;
+  const plotH = height;
 
   const MARGIN = { top: 28, right: 24, bottom: 28, left: 56 };
   const innerW = Math.max(10, width - MARGIN.left - MARGIN.right);
@@ -235,33 +235,36 @@ export default function ComparisonView({
     </div>
   );
 
-  return (
-    <div ref={wrapperRef} style={{
-      width: "100%", height: "100%",
-      display: "flex", flexDirection: "column",
-    }}>
-      {/* Toolbar: Filter + Stats */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "5px 12px", height: toolbarH, boxSizing: "border-box",
-        borderBottom: `1px solid ${C.border}`,
-        background: C.surfaceLight, fontSize: 11,
-      }}>
-        <FilterChip k="identical" label="identisch" color={CYAN} />
-        <FilterChip k="similar" label="ähnlich" color={RED} />
-        <span style={{ width: 1, height: 16, background: C.border }} />
-        <FilterChip k="between" label="zwischen" color={C.text} />
-        <FilterChip k="within" label="innerhalb" color={C.textDim} />
-        <div style={{ flex: 1 }} />
-        <span style={{ color: C.textMuted, fontSize: 10 }}>
-          {data.stats?.identical_between ?? 0} ident. /{" "}
-          {data.stats?.similar_between ?? 0} ähnl. zwischen Liganden ·{" "}
-          {data.lig1_name} ({n1}) vs {data.lig2_name} ({n2})
-        </span>
-      </div>
+  const toolbar = (
+    <>
+      <FilterChip k="identical" label="identisch" color={CYAN} />
+      <FilterChip k="similar" label="ähnlich" color={RED} />
+      <span style={{ width: 1, height: 16, background: C.border }} />
+      <FilterChip k="between" label="zwischen" color={C.text} />
+      <FilterChip k="within" label="innerhalb" color={C.textDim} />
+      <div style={{ flex: 1 }} />
+      <span style={{ color: C.textMuted, fontSize: 10 }}>
+        {data.stats?.identical_between ?? 0} ident. /{" "}
+        {data.stats?.similar_between ?? 0} ähnl. zwischen Liganden ·{" "}
+        {data.lig1_name} ({n1}) vs {data.lig2_name} ({n2})
+      </span>
+    </>
+  );
 
-      {/* Plot */}
-      <div style={{ flex: 1, minHeight: 0 }}>
+  return (
+    <VizFrame
+      title="Six-Lane — Ligandenvergleich (Paper-Layout)"
+      subtitle="Sechs Spuren: a–c = Ligand 1, d–f = Ligand 2. Linien verbinden IFPs, die zwischen oder innerhalb der Liganden identisch bzw. ähnlich sind. Hover hebt alle Verbindungen einer IFP hervor, Klick selektiert deren Cluster."
+      toolbar={toolbar}
+      legend={<>
+        <Swatch shape="line" color={CYAN} label="identisch (zwischen Liganden)" />
+        <Swatch shape="line" color={RED} label="ähnlich (zwischen Liganden)" />
+        <Swatch shape="line" color={BLUE1} label="innerhalb Ligand 1" />
+        <Swatch shape="line" color={BLUE2} label="innerhalb Ligand 2" />
+        <Note>Auswahl aus anderen Tabs erscheint als rosa Markierung</Note>
+      </>}
+    >
+      <div ref={wrapperRef} style={{ width: "100%", height: "100%", position: "relative" }}>
         <svg ref={svgRef} width={width} height={plotH}
           style={{ display: "block", background: C.bg }}>
           {/* Spuren */}
@@ -346,32 +349,32 @@ export default function ComparisonView({
             IFP-Index →
           </text>
         </svg>
-      </div>
 
-      {/* Tooltip */}
-      {hover && hoverIfp && (
-        <div style={{
-          position: "absolute",
-          left: Math.min(hover.x + 16, width - 200),
-          top: hover.y + toolbarH + 12,
-          padding: "6px 10px", borderRadius: 4,
-          background: C.surface,
-          border: `1px solid ${hover.lig === 1 ? BLUE1 : BLUE2}`,
-          color: C.text, fontSize: 11, lineHeight: 1.5,
-          pointerEvents: "none", zIndex: 5, minWidth: 150,
-        }}>
-          <div style={{ fontWeight: 600 }}>
-            {hover.lig === 1 ? data.lig1_name : data.lig2_name} · IFP #{hover.local}
+        {/* Tooltip */}
+        {hover && hoverIfp && (
+          <div style={{
+            position: "absolute",
+            left: Math.min(hover.x + 16, width - 200),
+            top: hover.y + 12,
+            padding: "6px 10px", borderRadius: 4,
+            background: C.surface,
+            border: `1px solid ${hover.lig === 1 ? BLUE1 : BLUE2}`,
+            color: C.text, fontSize: 11, lineHeight: 1.5,
+            pointerEvents: "none", zIndex: 5, minWidth: 150,
+          }}>
+            <div style={{ fontWeight: 600 }}>
+              {hover.lig === 1 ? data.lig1_name : data.lig2_name} · IFP #{hover.local}
+            </div>
+            <div style={{ color: C.textDim }}>
+              Cluster {hoverIfp.cluster_id ?? "—"} · {hoverIfp.occurence} Frames
+            </div>
+            <div style={{ color: C.textMuted, fontSize: 10 }}>
+              {highlightIdx.length} Verbindung{highlightIdx.length === 1 ? "" : "en"}
+              {hoverIfp.cluster_id != null ? " · Klick = Cluster selektieren" : ""}
+            </div>
           </div>
-          <div style={{ color: C.textDim }}>
-            Cluster {hoverIfp.cluster_id ?? "—"} · {hoverIfp.occurence} Frames
-          </div>
-          <div style={{ color: C.textMuted, fontSize: 10 }}>
-            {highlightIdx.length} Verbindung{highlightIdx.length === 1 ? "" : "en"}
-            {hoverIfp.cluster_id != null ? " · Klick = Cluster selektieren" : ""}
-          </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </VizFrame>
   );
 }

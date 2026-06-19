@@ -16,6 +16,9 @@ from pipeline import (
     get_session_info, update_parameters,
     data_network, data_occurrence, data_distance_matrix, data_circle,
     data_clusters, data_umap, data_comparison,
+    data_comparison_clusters, data_comparison_embedding,
+    data_comparison_residues,
+    data_comparison_chords,
 )
 
 app = FastAPI(title="IFPAggVis GUI Backend", version="0.1.0")
@@ -244,6 +247,42 @@ def api_data_comparison():
     """JSON Six-Lane-Vergleich (interaktiv): Knoten + Verbindungen."""
     try:
         return data_comparison(session)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/comparison/clusters")
+def api_data_comparison_clusters(top_k: int = 30):
+    """Cluster×Cluster-Kreuzdistanz (Heatmap + bipartiter Graph)."""
+    try:
+        return data_comparison_clusters(session, top_k=top_k)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/comparison/embedding")
+def api_data_comparison_embedding():
+    """Geteiltes 2D-UMAP-Embedding der Modi beider Liganden."""
+    try:
+        return data_comparison_embedding(session)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/comparison/residues")
+def api_data_comparison_residues():
+    """Belegung pro Interaktion/Residuum in L1 vs. L2."""
+    try:
+        return data_comparison_residues(session)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/data/comparison/chords")
+def api_data_comparison_chords():
+    """Residuen-Ko-Vorkommens-Netzwerk (Chord-Diagramm)."""
+    try:
+        return data_comparison_chords(session)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

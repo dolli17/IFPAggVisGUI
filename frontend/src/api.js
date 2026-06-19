@@ -105,6 +105,22 @@ export async function getDataComparison() {
   return request("/data/comparison");
 }
 
+export async function getComparisonClusters(topK = 30) {
+  return request(`/data/comparison/clusters?top_k=${topK}`);
+}
+
+export async function getComparisonEmbedding() {
+  return request("/data/comparison/embedding");
+}
+
+export async function getComparisonResidues() {
+  return request("/data/comparison/residues");
+}
+
+export async function getComparisonChords() {
+  return request("/data/comparison/chords");
+}
+
 export async function updateParameters(params) {
   return request("/parameters", {
     method: "POST",

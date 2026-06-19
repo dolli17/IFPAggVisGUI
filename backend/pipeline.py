@@ -1123,10 +1123,21 @@ def data_clusters(session: IFPSession, ligand: int = 1) -> dict:
     # Interaction column names — same order as `pattern` in each cluster,
     # so the frontend can label per-position tooltips on the pattern strip.
     int_cols = [c for c in agg.columns if c not in ("diff_to_prev", "occurence")]
+    # Trajektorie-Frame des repräsentativen IFP je Cluster (csv_mid aus der
+    # frame_map). Erlaubt dem 3D-Viewer den Sprung auf die reale Bindungspose
+    # eines selektierten Modus (Frame-Sprung im Vergleich).
+    frame_map = getattr(session, "frame_map_2" if ligand == 2 else "frame_map")
+    clusters = []
+    for c in (summary or []):
+        rep = c.get("representative_ifp")
+        rep_frame = None
+        if frame_map and rep is not None and 0 <= rep < len(frame_map):
+            rep_frame = frame_map[rep].get("csv_mid")
+        clusters.append({**c, "representative_frame": rep_frame})
     return {
         "cluster_id_per_ifp": cpi or [],
-        "n_clusters": len(summary or []),
-        "clusters": summary or [],
+        "n_clusters": len(clusters),
+        "clusters": clusters,
         "n_ifps": len(agg),
         "total_frames": int(agg["occurence"].sum()) if len(agg) else 0,
         "interaction_columns": int_cols,
@@ -1390,6 +1401,213 @@ def data_comparison(session: IFPSession) -> dict:
             "similar_within": _count("similar", "within"),
         },
     }
+
+
+def _comparison_cluster_reps(session):
+    """Pro Struktur-Cluster: repräsentativer merged-Index + Frame-Occupancy.
+
+    Struktur-Cluster gruppieren *identische* IFP-Patterns, daher
+    charakterisiert eine repräsentative merged-Zeile den Cluster
+    vollständig. Liefert (clusters_lig1, clusters_lig2), je absteigend
+    nach Occupancy sortiert.
+    """
+    n1 = len(session.aggregated_df)
+    occ = session.merged_df["occurence"].values
+    sc1 = session.structure_clusters or []
+    sc2 = session.structure_clusters_2 or []
+
+    def _collect(sc, offset):
+        reps, occ_sum, size = {}, {}, {}
+        for local, cid in enumerate(sc):
+            if cid is None or cid < 0:
+                continue
+            cid = int(cid)
+            mi = offset + local
+            if cid not in reps:
+                reps[cid], occ_sum[cid], size[cid] = mi, 0, 0
+            occ_sum[cid] += int(occ[mi])
+            size[cid] += 1
+        out = [{"cluster_id": cid, "rep_index": reps[cid],
+                "occupancy": occ_sum[cid], "size": size[cid]}
+               for cid in reps]
+        out.sort(key=lambda d: d["occupancy"], reverse=True)
+        return out
+
+    return _collect(sc1, 0), _collect(sc2, n1)
+
+
+def data_comparison_clusters(session: IFPSession, top_k: int = 30) -> dict:
+    """Cluster×Cluster-Kreuzdistanz für Heatmap + bipartiten Graph.
+
+    Matrix der (struktur-aggregierten) Distanzen zwischen den `top_k`
+    häufigsten Modi von Ligand 1 und Ligand 2. Distanzen kommen aus der
+    bereits spaltenangeglichenen `cross_distances` über die Cluster-
+    Repräsentanten — dieselbe Datengrundlage speist Heatmap (A) und
+    bipartiten Graph (B) im Frontend.
+    """
+    if session.merged_df is None or session.cross_distances is None:
+        raise ValueError("Run comparison first.")
+    c1_all, c2_all = _comparison_cluster_reps(session)
+    c1, c2 = c1_all[:top_k], c2_all[:top_k]
+    dist = np.asarray(session.cross_distances)
+    matrix = [[float(dist[a["rep_index"]][b["rep_index"]]) for b in c2]
+              for a in c1]
+
+    def _strip(c):
+        return [{"cluster_id": x["cluster_id"], "occupancy": x["occupancy"],
+                 "size": x["size"]} for x in c]
+
+    return {
+        "lig1_name": session.ligand_name_1,
+        "lig2_name": session.ligand_name_2,
+        "clusters1": _strip(c1), "clusters2": _strip(c2),
+        "matrix": matrix,
+        "n_clusters1_total": len(c1_all), "n_clusters2_total": len(c2_all),
+        "shown1": len(c1), "shown2": len(c2),
+        "thresholds": {
+            "identical": float(session.identical_threshold[0]),
+            "similar_upper": float(session.similarity_threshold[-1]),
+        },
+    }
+
+
+def data_comparison_embedding(session: IFPSession) -> dict:
+    """Geteiltes 2D-UMAP-Embedding der Modi beider Liganden in EINEM Raum.
+
+    Ein Punkt pro Struktur-Cluster (beide Liganden), eingebettet über die
+    gemeinsamen (merged) Interaktionsspalten mit Hamming-Metrik. Farbe =
+    Ligand, Größe ∝ Occupancy. Überlappende Punkte ≙ geteilte Modi.
+    """
+    import umap  # lazy: Import ist langsam (~2s)
+
+    if session.merged_df is None:
+        raise ValueError("Run comparison first.")
+    c1_all, c2_all = _comparison_cluster_reps(session)
+    reps = ([(a["rep_index"], 1, a["cluster_id"], a["occupancy"]) for a in c1_all]
+            + [(b["rep_index"], 2, b["cluster_id"], b["occupancy"]) for b in c2_all])
+    if len(reps) < 3:
+        raise ValueError("Too few clusters for an embedding.")
+
+    int_cols = [c for c in session.merged_df.columns
+                if c not in ("diff_to_prev", "occurence", "Lig")]
+    idx = [r[0] for r in reps]
+    matrix = session.merged_df.iloc[idx][int_cols].to_numpy(dtype=np.uint8)
+
+    n_neighbors = max(2, min(15, len(reps) - 1))
+    reducer = umap.UMAP(n_components=2, n_neighbors=n_neighbors,
+                        min_dist=0.1, metric="hamming", random_state=42)
+    xy = reducer.fit_transform(matrix)
+
+    points = [{"x": float(xy[i, 0]), "y": float(xy[i, 1]),
+               "lig": reps[i][1], "cluster_id": reps[i][2],
+               "occupancy": reps[i][3]} for i in range(len(reps))]
+    return {
+        "points": points, "n_points": len(points),
+        "lig1_name": session.ligand_name_1,
+        "lig2_name": session.ligand_name_2,
+        "params": {"n_neighbors": n_neighbors, "min_dist": 0.1,
+                   "metric": "hamming"},
+    }
+
+
+def data_comparison_residues(session: IFPSession) -> dict:
+    """Pro Interaktion/Residuum: Frame-gewichtete Belegung in L1 vs. L2.
+
+    Occupancy = Anteil der Frames (gewichtet mit `occurence`), in denen die
+    Interaktion aktiv ist — getrennt je Ligand. Abseits der Diagonale =
+    ligandenspezifische Interaktion. Sortiert nach |L1 − L2|.
+    """
+    if session.merged_df is None:
+        raise ValueError("Run comparison first.")
+    df = session.merged_df
+    int_cols = [c for c in df.columns
+                if c not in ("diff_to_prev", "occurence", "Lig")]
+    name1, name2 = session.ligand_name_1, session.ligand_name_2
+    occ = df["occurence"].to_numpy(dtype=float)
+    lig = df["Lig"].to_numpy()
+    m1, m2 = lig == name1, lig == name2
+    tot1 = float(occ[m1].sum()) or 1.0
+    tot2 = float(occ[m2].sum()) or 1.0
+
+    residues = []
+    for col in int_cols:
+        v = df[col].to_numpy(dtype=float)
+        o1 = float((occ[m1] * v[m1]).sum() / tot1)
+        o2 = float((occ[m2] * v[m2]).sum() / tot2)
+        residues.append({"name": str(col), "l1": o1, "l2": o2,
+                         "diff": abs(o1 - o2)})
+    residues.sort(key=lambda d: d["diff"], reverse=True)
+    return {"residues": residues, "lig1_name": name1, "lig2_name": name2}
+
+
+def data_comparison_chords(session: IFPSession, max_chords: int = 600) -> dict:
+    """Residuen-Ko-Vorkommens-Netzwerk für ein Chord-Diagramm.
+
+    Knoten = Residuen (eine Interaktion zählt für ihr Residuum). Eine
+    Kante (Chord) zwischen zwei Residuen = wie oft beide *gleichzeitig*
+    engagiert sind, frame-gewichtet und je Ligand getrennt
+    (`l1`, `l2` = Anteil der Frames mit gleichzeitigem Kontakt).
+    Frame-exakt aus `merged_df` (occurence-gewichtet).
+    """
+    import re
+
+    if session.merged_df is None:
+        raise ValueError("Run comparison first.")
+    df = session.merged_df
+    int_cols = [c for c in df.columns
+                if c not in ("diff_to_prev", "occurence", "Lig")]
+    name1, name2 = session.ligand_name_1, session.ligand_name_2
+
+    res_of = lambda col: str(col).split("_")[0]
+    res_index, residues = {}, []
+    for c in int_cols:
+        r = res_of(c)
+        if r not in res_index:
+            res_index[r] = len(residues)
+            residues.append(r)
+    nres = len(residues)
+
+    V = df[int_cols].to_numpy(dtype=float)
+    M = np.zeros((len(int_cols), nres))
+    for k, c in enumerate(int_cols):
+        M[k, res_index[res_of(c)]] = 1.0
+    R = (V @ M > 0).astype(float)               # rows × residues (engagiert?)
+
+    occ = df["occurence"].to_numpy(dtype=float)
+    lig = df["Lig"].to_numpy()
+
+    def _cooc(mask):
+        w = occ[mask]
+        tot = float(w.sum()) or 1.0
+        Rm = R[mask]
+        return (Rm.T @ (Rm * w[:, None])) / tot   # residues × residues
+
+    C1, C2 = _cooc(lig == name1), _cooc(lig == name2)
+    eng1, eng2 = np.diag(C1), np.diag(C2)
+
+    # Residuen nach Sequenznummer ordnen (lesbarer Kreis)
+    def _seq(r):
+        m = re.search(r"\d+", r)
+        return int(m.group()) if m else 0
+    order = sorted(range(nres), key=lambda i: _seq(residues[i]))
+    pos = {old: new for new, old in enumerate(order)}
+
+    chords = []
+    for i in range(nres):
+        for j in range(i + 1, nres):
+            l1, l2 = float(C1[i, j]), float(C2[i, j])
+            if l1 <= 1e-6 and l2 <= 1e-6:
+                continue
+            chords.append({"i": pos[i], "j": pos[j], "l1": l1, "l2": l2})
+    chords.sort(key=lambda c: max(c["l1"], c["l2"]), reverse=True)
+    chords = chords[:max_chords]
+
+    res_out = [{"name": residues[old], "l1": float(eng1[old]),
+                "l2": float(eng2[old])} for old in order]
+    return {"residues": res_out, "chords": chords,
+            "n_chords_total": sum(1 for i in range(nres) for j in range(i + 1, nres)
+                                  if C1[i, j] > 1e-6 or C2[i, j] > 1e-6),
+            "lig1_name": name1, "lig2_name": name2}
 
 
 def load_pdb(session: IFPSession, file_bytes: bytes, filename: str,

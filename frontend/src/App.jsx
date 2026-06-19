@@ -6,8 +6,9 @@ import HeatmapView from "./HeatmapView";
 import CircleView from "./CircleView";
 import ClusterTableView from "./ClusterTableView";
 import UmapView from "./UmapView";
-import ComparisonView from "./ComparisonView";
+import ComparisonTab from "./ComparisonTab";
 import { buildClusterColors } from "./clusterColors";
+import { BLUE1, BLUE2 } from "./comparison/theme";
 
 // ─── Colors ──────────────────────────────────────────────────────
 const C = {
@@ -402,7 +403,24 @@ function Check({ label, checked, onChange }) {
 // ═══════════════════════════════════════════════════════════════════
 // 3D VIEWER COMPONENT
 // ═══════════════════════════════════════════════════════════════════
-function Viewer3D({ pdbData, highlightResidues }) {
+// Residuum-Label ("MN400", "ASP42.A") → 3Dmol-resi-Nummer (oder null).
+function resiOf(label) {
+  const match = String(label).replace(/\..+$/, "").match(/^([A-Z]+)(\d+)$/);
+  return match ? parseInt(match[2]) : null;
+}
+
+// Lineare Interpolation zwischen zwei Hex-Farben (t∈[0,1]) → "#rrggbb".
+function lerpHex(a, b, t) {
+  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [ar, ag, ab] = p(a), [br, bg, bb] = p(b);
+  const c = (x, y) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
+  return `#${c(ar, br)}${c(ag, bg)}${c(ab, bb)}`;
+}
+
+// residueColors: optionale { [resi:number]: colorString } — Difference-Map
+// o.ä. Wird unter den (pinken) highlightResidues gezeichnet, sodass die
+// aktive Cluster-/Hover-Auswahl die Flächenfärbung überlagert.
+function Viewer3D({ pdbData, highlightResidues, residueColors }) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
 
@@ -424,22 +442,26 @@ function Viewer3D({ pdbData, highlightResidues }) {
     }
   }, [pdbData]);
 
-  // Multi-selection: highlight every residue in the list. The previously
-  // selected ones are reset by re-applying the base style first.
+  // Styling-Layer: Basis-Style → Δ-Färbung (residueColors) → Highlight (pink).
+  // Vorherige Selektion wird durch erneutes Setzen des Basis-Styles verworfen.
   useEffect(() => {
     if (!viewerRef.current || !pdbData) return;
     viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
     viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
+    if (residueColors) {
+      for (const [resi, color] of Object.entries(residueColors)) {
+        viewerRef.current.addStyle({ resi: parseInt(resi) },
+          { cartoon: { color }, stick: { color } });
+      }
+    }
     for (const label of highlightResidues || []) {
-      const resName = label.replace(/\..+$/, ""); // strip chain
-      const match = resName.match(/^([A-Z]+)(\d+)$/);
-      if (match) {
-        const resi = parseInt(match[2]);
+      const resi = resiOf(label);
+      if (resi != null) {
         viewerRef.current.addStyle({ resi }, { stick: { color: "#f472b6" } });
       }
     }
     viewerRef.current.render();
-  }, [highlightResidues, pdbData]);
+  }, [highlightResidues, residueColors, pdbData]);
 
   return (
     <div ref={containerRef}
@@ -470,6 +492,14 @@ export default function App() {
   // ── Visualization data ──
   const [vizData, setVizData] = useState({});
   const [pdbData, setPdbData] = useState(null);
+  // Vergleichs-Modus: beide Liganden-Strukturen gleichzeitig im rechten
+  // Panel (Dual-Viewer). `viewer3dMode` schaltet die Struktur-Färbung um:
+  //   "cluster" — aktive Residuen des selektierten Clusters (pink)
+  //   "diff"    — Difference-Map (Belegung L1 vs L2, ligandenfarbig)
+  const [comparisonPdb, setComparisonPdb] = useState({ 1: null, 2: null });
+  const [viewer3dMode, setViewer3dMode] = useState("cluster");
+  // Transientes Residuum aus Hover über Residuen-/Chord-View (beide Viewer).
+  const [hoverResidue3D, setHoverResidue3D] = useState(null);
   // Multi-selection: array of residue labels. The *last* element is the
   // "primary" — that's what the 3D viewer focuses and what the circle
   // chart's focus pane shows. All elements get highlighted in the
@@ -831,6 +861,22 @@ export default function App() {
     }
   }, [activeLigand, session?.has_trajectory, session?.has_trajectory_2, session?.has_pdb, session?.has_pdb_2]);
 
+  // ── Vergleichs-Modus: beide Strukturen für den Dual-Viewer laden ──
+  useEffect(() => {
+    if (viewMode !== "comparison") return;
+    for (const lig of [1, 2]) {
+      const hasTraj = lig === 2 ? session?.has_trajectory_2 : session?.has_trajectory;
+      const hasPdbLig = lig === 2 ? session?.has_pdb_2 : session?.has_pdb;
+      if (!(hasTraj || hasPdbLig)) {
+        setComparisonPdb(prev => (prev[lig] ? { ...prev, [lig]: null } : prev));
+        continue;
+      }
+      api.getPDB(lig)
+        .then(data => setComparisonPdb(prev => ({ ...prev, [lig]: data.pdb })))
+        .catch(() => setComparisonPdb(prev => ({ ...prev, [lig]: null })));
+    }
+  }, [viewMode, session?.has_trajectory, session?.has_trajectory_2, session?.has_pdb, session?.has_pdb_2]);
+
   // ── Pipeline actions ──
   const handleAggregate = async (isSecond = false) => {
     await withLoading("aggregate", () => api.runAggregation(isSecond, x1Filter, x2Filter));
@@ -853,7 +899,7 @@ export default function App() {
   // ── Visualization loading ──
   const loadViz = useCallback(async (vizTab, opts = {}) => {
     const lig = opts.ligand || 1;
-    const cacheKey = vizTab === "comparison" ? "comparison" : `${vizTab}_${lig}`;
+    const cacheKey = vizTab.startsWith("comparison") ? vizTab : `${vizTab}_${lig}`;
     const loadingKey = `viz_${vizTab}`;
     return await withLoading(loadingKey, async () => {
       let data;
@@ -880,6 +926,18 @@ export default function App() {
           break;
         case "comparison":
           data = await api.getDataComparison();
+          break;
+        case "comparison_clusters":
+          data = await api.getComparisonClusters();
+          break;
+        case "comparison_embedding":
+          data = await api.getComparisonEmbedding();
+          break;
+        case "comparison_residues":
+          data = await api.getComparisonResidues();
+          break;
+        case "comparison_chords":
+          data = await api.getComparisonChords();
           break;
         case "clusters":
           // Structural-aggregation payload: per-IFP cluster id +
@@ -925,6 +983,69 @@ export default function App() {
     selectCluster(cid, additive);
     setPendingClusterSelect(null);
   }, [pendingClusterSelect, activeLigand, vizData, selectCluster]);
+
+  // ── Cluster → aktive Residuen (nur im Vergleich) ──
+  // Im Einzelmodus ist Cluster→Residuen bewusst entkoppelt (selectCluster
+  // löscht highlightResidues). Im Vergleich wollen wir die aktiven Residuen
+  // des selektierten Clusters im 3D-Viewer sehen: deklarativ aus den
+  // active_residues der selectedClusters des aktiven Liganden ableiten.
+  useEffect(() => {
+    if (viewMode !== "comparison") return;
+    const cl = vizData[`clusters_${activeLigand}`]?.clusters;
+    if (!cl) return;
+    const set = new Set();
+    for (const cid of selectedClusters) {
+      for (const r of cl[cid]?.active_residues || []) set.add(r);
+    }
+    setHighlightResidues([...set]);
+  }, [viewMode, selectedClusters, activeLigand, vizData]);
+
+  // ── Frame-Sprung: aktiven Viewer auf die repräsentative Pose setzen ──
+  // Hat der aktive Ligand eine Trajektorie, springt der Dual-Viewer beim
+  // Cluster-Select auf den repräsentativen Frame (csv_mid) des Modus.
+  useEffect(() => {
+    if (viewMode !== "comparison" || !selectedClusters.length) return;
+    const cl = vizData[`clusters_${activeLigand}`]?.clusters;
+    const hasTraj = activeLigand === 2 ? session?.has_trajectory_2 : session?.has_trajectory;
+    if (!cl || !hasTraj) return;
+    const cid = selectedClusters[selectedClusters.length - 1];
+    const frame = cl[cid]?.representative_frame;
+    if (frame == null) return;
+    api.getTrajectoryFrame(frame, activeLigand)
+      .then(d => setComparisonPdb(prev => ({ ...prev, [activeLigand]: d.pdb })))
+      .catch(() => {});
+  }, [viewMode, selectedClusters, activeLigand, vizData, session?.has_trajectory, session?.has_trajectory_2]);
+
+  // Difference-Map: signierter Belegungs-Δ je Residuum (Σ l1 − Σ l2) aus den
+  // Vergleichs-Residuendaten → resi → Farbe (L1-dominant blau, L2-dominant
+  // amber, Intensität ∝ |Δ|). Konsistent mit den Liganden-Identitätsfarben.
+  const diffResidueColors = useMemo(() => {
+    const res = vizData.comparison_residues?.residues;
+    if (!res?.length) return null;
+    const agg = new Map();
+    for (const r of res) {
+      const tok = String(r.name).split("_")[0];
+      agg.set(tok, (agg.get(tok) || 0) + (r.l1 - r.l2));
+    }
+    let max = 1e-6;
+    for (const v of agg.values()) max = Math.max(max, Math.abs(v));
+    const colors = {};
+    for (const [tok, v] of agg) {
+      const resi = resiOf(tok);
+      if (resi == null) continue;
+      const t = 0.35 + 0.65 * Math.min(1, Math.abs(v) / max);
+      colors[resi] = lerpHex("#4a5568", v >= 0 ? BLUE1 : BLUE2, t);
+    }
+    return colors;
+  }, [vizData.comparison_residues]);
+
+  // Residuendaten für die Difference-Map bei Bedarf nachladen.
+  useEffect(() => {
+    if (viewMode !== "comparison" || viewer3dMode !== "diff") return;
+    if (!session?.has_comparison) return;
+    if (!vizData.comparison_residues) loadViz("comparison_residues");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, viewer3dMode, session?.has_comparison, vizData.comparison_residues]);
 
   // Load viz when tab/ligand/viewMode changes (if aggregation is done)
   useEffect(() => {
@@ -1586,11 +1707,19 @@ export default function App() {
             ) : viewMode === "comparison" ? (
               vizData.comparison?.ifps ? (
                 <div style={{ width: "100%", height: "100%", position: "relative" }}>
-                  <ComparisonView
+                  <ComparisonTab
                     data={vizData.comparison}
+                    encodings={{
+                      clusters: vizData.comparison_clusters,
+                      embedding: vizData.comparison_embedding,
+                      residues: vizData.comparison_residues,
+                      chords: vizData.comparison_chords,
+                    }}
+                    onLoadEncoding={(kind) => loadViz(`comparison_${kind}`)}
                     selectedClusters={selectedClusters}
                     activeLigand={activeLigand}
-                    onSelectIfp={selectComparisonIfp}
+                    onSelectCluster={selectComparisonIfp}
+                    onHoverResidue={setHoverResidue3D}
                   />
                 </div>
               ) : (
@@ -1818,54 +1947,115 @@ export default function App() {
 
         {/* ════════ RIGHT: 3D Viewer ════════ */}
         <div style={{ width: viewerWidth, background: C.surface, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: C.text, flexShrink: 0 }}>3D Viewer</span>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, minWidth: 0 }}>
-              {/* Cluster info — visible whenever the current frame has
-                  a cluster assignment. Mirrors the slider status line so
-                  the user sees the binding-mode context next to the 3D
-                  structure too. */}
-              {currentClusterId != null && clusterColors && (
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 5,
-                  fontSize: 10, color: C.textDim,
-                  maxWidth: "100%", overflow: "hidden",
-                }}>
-                  <span style={{
-                    display: "inline-block", width: 8, height: 8,
-                    borderRadius: 2,
-                    background: clusterColors.colorOf(currentClusterId),
-                    flexShrink: 0,
-                  }} />
-                  <span style={{ whiteSpace: "nowrap" }}>
-                    Cl {currentClusterId} · IFP {networkFrame}
-                    {currentClusterSiblings?.length > 1 && siblingPos != null && (
-                      ` (${siblingPos + 1}/${currentClusterSiblings.length})`
-                    )}
+          {viewMode === "comparison" ? (() => {
+            // Dual-Viewer: beide Liganden-Strukturen gestapelt. Der aktive
+            // Ligand erhält das Cluster-Residuen-Highlight, der Hover wird in
+            // beiden gezeigt; die Δ-Färbung gilt symmetrisch für beide.
+            const ligName = (lig) => lig === 2 ? session?.ligand_name_2 : session?.ligand_name_1;
+            const hlFor = (lig) => {
+              const base = lig === activeLigand ? highlightResidues : [];
+              return hoverResidue3D ? [...base, hoverResidue3D] : base;
+            };
+            const colorsFor = () => viewer3dMode === "diff" ? diffResidueColors : null;
+            const Pane = ({ lig }) => (
+              <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
+                borderTop: lig === 2 ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ padding: "4px 10px", display: "flex", alignItems: "center",
+                  gap: 6, fontSize: 10, color: C.textDim }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%",
+                    background: lig === 1 ? BLUE1 : BLUE2, flexShrink: 0 }} />
+                  <span style={{ color: lig === 1 ? BLUE1 : BLUE2, fontWeight: 600,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {ligName(lig) || `Ligand ${lig}`}
                   </span>
+                  {lig === activeLigand && <span style={{ color: C.textMuted }}>· aktiv</span>}
                 </div>
-              )}
-              {highlightResidues.length > 0 && (
-                <span style={{ fontSize: 10, color: C.pink, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
-                  {highlightResidues.length === 1
-                    ? highlightResidues[0]
-                    : `${highlightResidues.length} Residuen`}
-                </span>
-              )}
-            </div>
-          </div>
-          <div style={{ flex: 1, minHeight: 0 }}>
-            {pdbData ? (
-              <Viewer3D pdbData={pdbData} highlightResidues={highlightResidues} />
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, textAlign: "center" }}>
-                <div>
-                  <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Keine PDB-Datei geladen</div>
-                  <div style={{ fontSize: 10, color: C.textMuted }}>PDB laden im Daten-Bereich</div>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  {comparisonPdb[lig] ? (
+                    <Viewer3D pdbData={comparisonPdb[lig]}
+                      highlightResidues={hlFor(lig)} residueColors={colorsFor()} />
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                      height: "100%", padding: 12, textAlign: "center", fontSize: 10, color: C.textMuted }}>
+                      Keine Struktur für {ligName(lig) || `Ligand ${lig}`}
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
-          </div>
+            );
+            return (
+              <>
+                <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.border}`,
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>3D Viewer · Vergleich</span>
+                  <div style={{ display: "flex" }}>
+                    {[["cluster", "Cluster-Residuen"], ["diff", "Δ-Belegung"]].map(([m, lbl], i) => (
+                      <div key={m} onClick={() => setViewer3dMode(m)} style={{
+                        padding: "2px 8px", cursor: "pointer", fontSize: 10, fontWeight: 600,
+                        borderRadius: 4, marginLeft: i === 0 ? 0 : -1,
+                        background: viewer3dMode === m ? C.accent : "transparent",
+                        color: viewer3dMode === m ? "#fff" : C.textDim,
+                        border: `1px solid ${viewer3dMode === m ? C.accent : C.border}`,
+                      }}>{lbl}</div>
+                    ))}
+                  </div>
+                </div>
+                <Pane lig={1} />
+                <Pane lig={2} />
+              </>
+            );
+          })() : (
+            <>
+              <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: C.text, flexShrink: 0 }}>3D Viewer</span>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, minWidth: 0 }}>
+                  {/* Cluster info — visible whenever the current frame has
+                      a cluster assignment. Mirrors the slider status line so
+                      the user sees the binding-mode context next to the 3D
+                      structure too. */}
+                  {currentClusterId != null && clusterColors && (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      fontSize: 10, color: C.textDim,
+                      maxWidth: "100%", overflow: "hidden",
+                    }}>
+                      <span style={{
+                        display: "inline-block", width: 8, height: 8,
+                        borderRadius: 2,
+                        background: clusterColors.colorOf(currentClusterId),
+                        flexShrink: 0,
+                      }} />
+                      <span style={{ whiteSpace: "nowrap" }}>
+                        Cl {currentClusterId} · IFP {networkFrame}
+                        {currentClusterSiblings?.length > 1 && siblingPos != null && (
+                          ` (${siblingPos + 1}/${currentClusterSiblings.length})`
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  {highlightResidues.length > 0 && (
+                    <span style={{ fontSize: 10, color: C.pink, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+                      {highlightResidues.length === 1
+                        ? highlightResidues[0]
+                        : `${highlightResidues.length} Residuen`}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                {pdbData ? (
+                  <Viewer3D pdbData={pdbData} highlightResidues={highlightResidues} />
+                ) : (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, textAlign: "center" }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Keine PDB-Datei geladen</div>
+                      <div style={{ fontSize: 10, color: C.textMuted }}>PDB laden im Daten-Bereich</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {/* 3D Frame Slider — range within current IFP */}
           {hasActiveTrajectory && vizData[currentCacheKey]?.mapped_frame && (() => {
             const mf = vizData[currentCacheKey].mapped_frame;
