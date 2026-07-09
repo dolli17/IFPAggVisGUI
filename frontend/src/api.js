@@ -117,8 +117,8 @@ export async function getComparisonResidues() {
   return request("/data/comparison/residues");
 }
 
-export async function getComparisonChords() {
-  return request("/data/comparison/chords");
+export async function getComparisonChords(maxChords = 600) {
+  return request(`/data/comparison/chords?max_chords=${maxChords}`);
 }
 
 export async function updateParameters(params) {

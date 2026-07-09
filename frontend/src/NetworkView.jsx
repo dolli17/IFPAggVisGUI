@@ -23,15 +23,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import cytoscape from "cytoscape";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-};
+import { C } from "./comparison/theme";
+import { EmptyState } from "./ui";
 
 // Normalize backend layout positions into a fixed canvas-sized box.
 // The backend layout can come from either networkx graphviz/neato (values
@@ -171,7 +164,7 @@ export default function NetworkView({
       container: containerRef.current,
       elements: [],
       style: cyStylesheet,
-      wheelSensitivity: 0.2,
+      wheelSensitivity: 0.5,
       minZoom: 0.2,
       maxZoom: 4,
     });
@@ -321,9 +314,30 @@ export default function NetworkView({
             fontFamily: "inherit",
           }}>Reset</button>
       </div>
-      {/* Cytoscape canvas */}
-      <div ref={containerRef}
-        style={{ flex: 1, minHeight: 0, background: C.bg }} />
+      {/* Cytoscape canvas (immer gemountet; Overlay erscheint, wenn leer) */}
+      <div style={{ flex: 1, minHeight: 0, position: "relative", background: C.bg }}>
+        <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+        {!data?.nodes?.length && (
+          <div style={{ position: "absolute", inset: 0 }}>
+            <EmptyState>Kein Interaktionsnetzwerk für diesen Frame.</EmptyState>
+          </div>
+        )}
+      </div>
+      {/* Interaktionstyp-Legende (Knotenfarbe → Interaktionstyp) */}
+      {data?.interaction_styles && Object.keys(data.interaction_styles).length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center",
+                      padding: "4px 10px", borderTop: `1px solid ${C.border}`,
+                      fontSize: 9, color: C.textDim }}>
+          <span style={{ color: C.textMuted }}>Interaktion:</span>
+          {Object.entries(data.interaction_styles).map(([name, st]) => (
+            <span key={name} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%",
+                background: st?.color || C.accent, border: `1px solid ${C.border}` }} />
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
       {/* Footer info */}
       {data && (
         <div style={{ padding: "4px 10px", borderTop: `1px solid ${C.border}`,

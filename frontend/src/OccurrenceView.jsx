@@ -23,16 +23,8 @@ import { scaleLinear } from "d3-scale";
 import { line, area } from "d3-shape";
 import { extent, max as d3max, bisector } from "d3-array";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#4a5568",
-};
+import { C } from "./comparison/theme";
+import { EmptyState } from "./ui";
 
 // Bottom margin reserves room for both the X axis (40 px) and the
 // structural-cluster band below it (24 px = 18 band + 6 gap).
@@ -299,9 +291,7 @@ export default function OccurrenceView({
       borderRadius: 8, border: `1px solid ${C.border}`,
     }}>
       {!geometry ? (
-        <div style={{ padding: 20, color: C.textDim, fontSize: 12 }}>
-          Keine Daten
-        </div>
+        <EmptyState>Noch keine Occurrence-Daten geladen.</EmptyState>
       ) : (
         <svg width={size.width} height={size.height}
           onMouseMove={handleMouseMove}
@@ -438,7 +428,8 @@ export default function OccurrenceView({
               </g>
             ))}
             <text x={-MARGIN.left + 4} y={-4}
-              fontSize={10} fill={C.textDim}>Occurrence</text>
+              fontSize={10} fill={C.textDim}
+              ><title>Occurrence = Anzahl Frames, in denen dieser IFP vorkommt</title>Occurrence (Frames)</text>
 
             {/* X axis */}
             <line x1={0} x2={geometry.innerW}
@@ -612,7 +603,7 @@ export default function OccurrenceView({
                     <rect x={8} y={48} width={10} height={10} rx={2}
                       fill={clusterColors.colorOf(cid)} />
                     <text x={22} y={57} fontSize={9} fill={C.textDim}>
-                      Cluster {cid} · {cluster.frame_count}f
+                      Structural IFP {cid} · {cluster.frame_count}f
                       {" "}({(cluster.frame_fraction * 100).toFixed(1)}%)
                       {cluster.ifp_count > 1 && (
                         ` · ${cluster.ifp_count} Geschwister`
@@ -651,7 +642,7 @@ export default function OccurrenceView({
                   <rect x={8} y={8} width={10} height={10} rx={2}
                     fill={clusterColors.colorOf(cid)} />
                   <text x={22} y={17} fontSize={10} fill={C.text}>
-                    Cluster {cid}
+                    Structural IFP {cid}
                     {isTop ? ` (Top ${cid + 1})` : ""}
                   </text>
                   <text x={8} y={32} fontSize={9} fill={C.accent}>
@@ -666,7 +657,7 @@ export default function OccurrenceView({
                   )}
                   {isTop && (
                     <text x={8} y={46} fontSize={9} fill={C.textDim}>
-                      Klick: Cluster auswählen
+                      Klick: Structural IFP auswählen
                     </text>
                   )}
                 </g>
@@ -685,7 +676,7 @@ export default function OccurrenceView({
         <span><span style={{ color: C.pink }}>┄</span> Cumulative</span>
         {onSetRange && (
           <span style={{ color: C.textMuted }}>
-            Drag = Zoom · ⇧+Drag = Cluster
+            Drag = Zoom · ⇧+Drag = Structural IFP
           </span>
         )}
       </div>

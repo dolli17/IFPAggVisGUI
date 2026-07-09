@@ -7,36 +7,11 @@ import CircleView from "./CircleView";
 import ClusterTableView from "./ClusterTableView";
 import UmapView from "./UmapView";
 import ComparisonTab from "./ComparisonTab";
-import { buildClusterColors } from "./clusterColors";
-import { BLUE1, BLUE2 } from "./comparison/theme";
-
-// ─── Colors ──────────────────────────────────────────────────────
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  surfaceLight: "#222738",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  accentDim: "rgba(108,123,212,0.15)",
-  pink: "#f472b6",
-  pinkDim: "rgba(244,114,182,0.15)",
-  green: "#4ade80",
-  greenDim: "rgba(74,222,128,0.15)",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#4a5568",
-  red: "#f87171",
-};
+import { buildClusterColors, CLUSTER_TOP_K } from "./clusterColors";
+import { C, FS, SP, R, BLUE1, BLUE2 } from "./comparison/theme";
+import { Button as Btn, Spinner, EmptyState } from "./ui";
 
 // ─── Reusable small components ───────────────────────────────────
-function Spinner() {
-  return (
-    <div style={{ display: "inline-block", width: 16, height: 16, border: `2px solid ${C.border}`, borderTopColor: C.accent, borderRadius: "50%", animation: "spin .6s linear infinite" }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
-
 // Cluster strip: thin horizontal band that mirrors the slider, one
 // coloured tick per IFP. Same colours as the OccurrenceView band.
 // Hover = tooltip, click = jump to that frame (or to the cluster's
@@ -159,9 +134,9 @@ function ClusterStrip({
           color: C.text, pointerEvents: "none", whiteSpace: "nowrap",
           zIndex: 10,
         }}>
-          IFP #{hoverIdx} · Cluster {hovCid}
+          IFP #{hoverIdx} · Structural IFP {hovCid}
           <span style={{ color: C.textDim, marginLeft: 6 }}>
-            Klick = Frame · ⌘/Ctrl+Klick = Cluster
+            Klick = Frame · ⌘/Ctrl+Klick = Structural IFP
           </span>
         </div>
       )}
@@ -260,7 +235,7 @@ function SelectionStatusBar({
               <span style={{ color: C.pink, fontWeight: 600 }}>
                 {matchingClustersCount}
               </span>
-              {" Clustern"}
+              {" Structural IFPs"}
             </span>
           )}
         </div>
@@ -274,7 +249,7 @@ function SelectionStatusBar({
       {/* Cluster pills */}
       {anyCluster && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-          <span style={{ color: C.textDim, fontSize: 10 }}>Cluster:</span>
+          <span style={{ color: C.textDim, fontSize: 10 }}>Structural IFP:</span>
           {selectedClusters.map((cid) => (
             <span key={cid} style={{
               display: "inline-flex", alignItems: "center", gap: 4,
@@ -288,7 +263,7 @@ function SelectionStatusBar({
                 style={{
                   cursor: "pointer", padding: "0 4px", fontSize: 12,
                   lineHeight: 1, opacity: 0.8,
-                }} title="Cluster entfernen">×</span>
+                }} title="Structural IFP entfernen">×</span>
             </span>
           ))}
         </div>
@@ -349,20 +324,6 @@ function SelectionStatusBar({
   );
 }
 
-function Btn({ children, onClick, disabled, accent, small, style: s }) {
-  const bg = accent ? C.accent : "transparent";
-  const clr = accent ? "#fff" : C.textDim;
-  return (
-    <button onClick={onClick} disabled={disabled} style={{
-      padding: small ? "4px 10px" : "6px 14px", borderRadius: 6,
-      border: `1px solid ${accent ? C.accent : C.border}`,
-      background: disabled ? C.surfaceLight : bg, color: disabled ? C.textMuted : clr,
-      fontSize: small ? 11 : 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
-      opacity: disabled ? 0.5 : 1, fontFamily: "inherit", ...s,
-    }}>{children}</button>
-  );
-}
-
 function SectionHeader({ label, open, onToggle }) {
   return (
     <div onClick={onToggle} style={{
@@ -390,16 +351,6 @@ function Slider({ label, value, onChange, min, max, step }) {
   );
 }
 
-function Check({ label, checked, onChange }) {
-  return (
-    <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 11, cursor: "pointer" }}>
-      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
-        style={{ accentColor: C.accent }} />
-      <span style={{ color: checked ? C.text : C.textDim }}>{label}</span>
-    </label>
-  );
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // 3D VIEWER COMPONENT
 // ═══════════════════════════════════════════════════════════════════
@@ -420,33 +371,47 @@ function lerpHex(a, b, t) {
 // residueColors: optionale { [resi:number]: colorString } — Difference-Map
 // o.ä. Wird unter den (pinken) highlightResidues gezeichnet, sodass die
 // aktive Cluster-/Hover-Auswahl die Flächenfärbung überlagert.
-function Viewer3D({ pdbData, highlightResidues, residueColors }) {
+function Viewer3D({ pdbData, highlightResidues, residueColors, baseColor = "#6c7bd4" }) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
 
   useEffect(() => {
     if (!containerRef.current || !window.$3Dmol) return;
+    // Rotation/Zoom über pdbData-Updates (z.B. Trajektorien-Frame) halten:
+    // vor dem Leeren die aktuelle Kamera merken und danach wiederherstellen.
+    // zoomTo() läuft nur bei der allerersten Ausrichtung.
+    let savedView = null;
     if (viewerRef.current) {
+      savedView = viewerRef.current.getView();
       viewerRef.current.clear();
     } else {
       viewerRef.current = window.$3Dmol.createViewer(containerRef.current, {
-        backgroundColor: C.bg,
+        // Weißer Hintergrund: Protein- und Ligandenstruktur heben sich
+        // deutlich besser ab als auf dem dunklen App-Hintergrund.
+        backgroundColor: "#ffffff",
       });
     }
     if (pdbData) {
       viewerRef.current.addModel(pdbData, "pdb");
-      viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
+      viewerRef.current.setStyle({}, { cartoon: { color: baseColor } });
       viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
-      viewerRef.current.zoomTo();
+      if (savedView) {
+        viewerRef.current.setView(savedView);
+      } else {
+        viewerRef.current.zoomTo();
+      }
       viewerRef.current.render();
     }
+    // baseColor bewusst NICHT als Dep: Farbwechsel (Modus-Umschaltung) wird vom
+    // zweiten Effekt angewandt; dieser Effekt soll nur bei pdbData neu laden.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdbData]);
 
   // Styling-Layer: Basis-Style → Δ-Färbung (residueColors) → Highlight (pink).
   // Vorherige Selektion wird durch erneutes Setzen des Basis-Styles verworfen.
   useEffect(() => {
     if (!viewerRef.current || !pdbData) return;
-    viewerRef.current.setStyle({}, { cartoon: { color: "#6c7bd4" } });
+    viewerRef.current.setStyle({}, { cartoon: { color: baseColor } });
     viewerRef.current.setStyle({ hetflag: true }, { stick: { colorscheme: "greenCarbon" } });
     if (residueColors) {
       for (const [resi, color] of Object.entries(residueColors)) {
@@ -461,11 +426,11 @@ function Viewer3D({ pdbData, highlightResidues, residueColors }) {
       }
     }
     viewerRef.current.render();
-  }, [highlightResidues, residueColors, pdbData]);
+  }, [highlightResidues, residueColors, pdbData, baseColor]);
 
   return (
     <div ref={containerRef}
-      style={{ width: "100%", height: "100%", position: "relative" }} />
+      style={{ width: "100%", height: "100%", position: "relative", background: "#ffffff" }} />
   );
 }
 
@@ -477,6 +442,7 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState({});
   const [error, setError] = useState(null);
+  const [ligandNameModal, setLigandNameModal] = useState(null); // { file, isSecond, name } | null
 
   // ── UI state ──
   const [tab, setTab] = useState("overview");
@@ -559,13 +525,22 @@ export default function App() {
     });
   }, []);
 
+  // Configurable "N" values (defaults reproduce the previous fixed
+  // behaviour exactly). clusterTopK colours the single-ligand cluster
+  // views (frontend-only recolour); cmpClusterTopK and chordMax gate
+  // backend slices and trigger a targeted refetch of their view.
+  const [clusterTopK, setClusterTopK] = useState(CLUSTER_TOP_K);
+  const [cmpClusterTopK, setCmpClusterTopK] = useState(30);
+  const [chordMax, setChordMax] = useState(600);
+
   // Resolve cluster colours for the active ligand's cluster payload.
   // Memoised so the (Hamming + HSL-shift) ramp only runs when the
-  // cluster data actually changes, not on every keystroke.
+  // cluster data or the chosen top-K actually changes, not on every
+  // keystroke.
   const clusterData = vizData[`clusters_${activeLigand}`];
   const clusterColors = useMemo(
-    () => buildClusterColors(clusterData?.clusters),
-    [clusterData],
+    () => buildClusterColors(clusterData?.clusters, clusterTopK),
+    [clusterData, clusterTopK],
   );
 
   // Filtered cluster data for ClusterTableView when a range filter is
@@ -780,14 +755,23 @@ export default function App() {
   };
 
   // ── File upload handlers ──
-  const handleCSVUpload = async (e, isSecond = false) => {
+  // CSV-Upload: Statt eines Browser-prompt() öffnen wir ein In-App-Modal
+  // zur Benennung des Liganden. Standardname aus dem Dateinamen abgeleitet.
+  const handleCSVUpload = (e, isSecond = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const name = prompt("Ligandenname eingeben:", isSecond ? "Ligand_2" : "Ligand_1");
-    if (!name) return;
-    await withLoading("upload", () => api.uploadCSV(file, name, isSecond));
-    refreshSession();
+    const fallback = isSecond ? "Ligand_2" : "Ligand_1";
+    const fromFile = file.name.replace(/\.[^.]+$/, "");
+    setLigandNameModal({ file, isSecond, name: fromFile || fallback });
     e.target.value = "";
+  };
+
+  const confirmLigandUpload = async () => {
+    const m = ligandNameModal;
+    if (!m || !m.name.trim()) return;
+    setLigandNameModal(null);
+    await withLoading("upload", () => api.uploadCSV(m.file, m.name.trim(), m.isSecond));
+    refreshSession();
   };
 
   const handlePDBUpload = async (e, ligand = 1) => {
@@ -928,7 +912,7 @@ export default function App() {
           data = await api.getDataComparison();
           break;
         case "comparison_clusters":
-          data = await api.getComparisonClusters();
+          data = await api.getComparisonClusters(opts.topK ?? 30);
           break;
         case "comparison_embedding":
           data = await api.getComparisonEmbedding();
@@ -937,7 +921,7 @@ export default function App() {
           data = await api.getComparisonResidues();
           break;
         case "comparison_chords":
-          data = await api.getComparisonChords();
+          data = await api.getComparisonChords(opts.maxChords ?? 600);
           break;
         case "clusters":
           // Structural-aggregation payload: per-IFP cluster id +
@@ -954,6 +938,18 @@ export default function App() {
       return data;
     });
   }, []);
+
+  // ── Refetch handlers for the backend-gated N values ──
+  // Each stores the chosen N and reloads only its own comparison view;
+  // loadViz overwrites just that cacheKey, so no other view is touched.
+  const reloadComparisonClusters = useCallback((topK) => {
+    setCmpClusterTopK(topK);
+    loadViz("comparison_clusters", { topK });
+  }, [loadViz]);
+  const reloadComparisonChords = useCallback((maxChords) => {
+    setChordMax(maxChords);
+    loadViz("comparison_chords", { maxChords });
+  }, [loadViz]);
 
   // ── Linked selection from the comparison view ──
   // The comparison shows both ligands, but selectedClusters / clusterData
@@ -1173,7 +1169,7 @@ export default function App() {
     { id: "circle", label: "Kreisdiagramm" },
     { id: "heatmap", label: "Distanzmatrix" },
     { id: "occurrence", label: "Vorkommen" },
-    { id: "clusters", label: "Cluster" },
+    { id: "clusters", label: "Structural IFP" },
     { id: "umap", label: "UMAP-Karte" },
   ];
 
@@ -1190,6 +1186,44 @@ export default function App() {
         <div style={{ padding: "6px 16px", background: "#7f1d1d", color: C.red, fontSize: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span>{error}</span>
           <span onClick={() => setError(null)} style={{ cursor: "pointer", fontWeight: 700 }}>&#10005;</span>
+        </div>
+      )}
+
+      {/* ── LIGAND-NAME-MODAL (ersetzt prompt() beim CSV-Upload) ── */}
+      {ligandNameModal && (
+        <div onClick={() => setLigandNameModal(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 50,
+            background: "rgba(0,0,0,0.55)", display: "flex",
+            alignItems: "center", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: 360, maxWidth: "90vw", background: C.surface,
+              border: `1px solid ${C.border}`, borderRadius: R.lg, padding: 20,
+              boxShadow: "0 10px 40px rgba(0,0,0,0.5)" }}>
+            <div style={{ fontSize: FS.title, fontWeight: 700, color: C.text, marginBottom: 4 }}>
+              Ligand benennen
+            </div>
+            <div style={{ fontSize: FS.small, color: C.textDim, marginBottom: 14 }}>
+              Name für {ligandNameModal.isSecond ? "den zweiten" : "den ersten"} Liganden
+              {" "}({ligandNameModal.file.name}).
+            </div>
+            <input autoFocus value={ligandNameModal.name}
+              onChange={(e) => setLigandNameModal(m => ({ ...m, name: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") confirmLigandUpload();
+                if (e.key === "Escape") setLigandNameModal(null);
+              }}
+              placeholder="z.B. Inhibitor_A"
+              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px",
+                borderRadius: R.md, border: `1px solid ${C.border}`,
+                background: C.bg, color: C.text, fontSize: FS.base,
+                fontFamily: "inherit", marginBottom: 16 }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <Btn onClick={() => setLigandNameModal(null)}>Abbrechen</Btn>
+              <Btn accent disabled={!ligandNameModal.name.trim()} onClick={confirmLigandUpload}>
+                Hochladen
+              </Btn>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1414,12 +1448,16 @@ export default function App() {
                 </>
               )}
 
-              {/* Dev: test data */}
-              <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
-              <Btn small onClick={handleGenerateTestData} disabled={loading.testdata}
-                style={{ width: "100%", fontSize: 10, borderStyle: "dashed" }}>
-                {loading.testdata ? <><Spinner /> ...</> : "DEV: Testdaten generieren"}
-              </Btn>
+              {/* Dev: test data — nur im Entwicklungsmodus sichtbar */}
+              {import.meta.env.DEV && (
+                <>
+                  <div style={{ height: 1, background: C.border, margin: "8px 0" }} />
+                  <Btn small onClick={handleGenerateTestData} disabled={loading.testdata}
+                    style={{ width: "100%", fontSize: 10, borderStyle: "dashed" }}>
+                    {loading.testdata ? <><Spinner /> ...</> : "DEV: Testdaten generieren"}
+                  </Btn>
+                </>
+              )}
             </div>
           )}
 
@@ -1427,17 +1465,6 @@ export default function App() {
           <SectionHeader label="Filter & Parameter" open={sections.filter} onToggle={() => toggleSection("filter")} />
           {sections.filter && (
             <div style={{ padding: "10px 12px" }}>
-              {/* Interaction type filters */}
-              {session?.interaction_types?.length > 0 && (
-                <>
-                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Interaktionstypen</div>
-                  {session.interaction_types.map(t => (
-                    <Check key={t} label={t} checked={true} onChange={() => {}} />
-                  ))}
-                  <div style={{ height: 1, background: C.border, margin: "10px 0" }} />
-                </>
-              )}
-
               {/* Thresholds */}
               <div style={{ fontSize: 10, color: C.textDim, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>Schwellenwerte</div>
               <Slider label="Identisch" value={params.identical_threshold?.[0] ?? 0}
@@ -1595,7 +1622,7 @@ export default function App() {
                 {currentClusterSiblings?.length > 1 && (
                   <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
                     <div onClick={() => jumpSibling(-1)}
-                      title="Vorheriger Frame im selben Cluster"
+                      title="Vorheriger Frame im selben Structural IFP"
                       style={{
                         padding: "3px 7px", borderRadius: 4, fontSize: 10,
                         background: C.pinkDim, color: C.pink,
@@ -1603,7 +1630,7 @@ export default function App() {
                         fontWeight: 600, lineHeight: 1,
                       }}>◀</div>
                     <div onClick={() => jumpSibling(+1)}
-                      title="Nächster Frame im selben Cluster"
+                      title="Nächster Frame im selben Structural IFP"
                       style={{
                         padding: "3px 7px", borderRadius: 4, fontSize: 10,
                         background: C.pinkDim, color: C.pink,
@@ -1612,7 +1639,7 @@ export default function App() {
                       }}>▶</div>
                   </div>
                 )}
-                <Btn small onClick={async () => {
+                <Btn small style={{ minWidth: 56 }} onClick={async () => {
                   const result = await loadViz("network", { frame: networkFrame, ligand: activeLigand });
                   // Reset 3D frame state so slider syncs to new IFP range
                   lastLoadedFrame.current = -1;
@@ -1639,7 +1666,7 @@ export default function App() {
                     borderRadius: 2,
                     background: clusterColors.colorOf(currentClusterId),
                   }} />
-                  <span>Cluster {currentClusterId}</span>
+                  <span>Structural IFP {currentClusterId}</span>
                   {currentClusterSiblings?.length > 1 && siblingPos != null && (
                     <span style={{ color: C.pink, fontWeight: 600 }}>
                       {siblingPos + 1}/{currentClusterSiblings.length} Geschwister
@@ -1720,6 +1747,10 @@ export default function App() {
                     activeLigand={activeLigand}
                     onSelectCluster={selectComparisonIfp}
                     onHoverResidue={setHoverResidue3D}
+                    cmpClusterTopK={cmpClusterTopK}
+                    onCmpClusterTopKChange={reloadComparisonClusters}
+                    chordMax={chordMax}
+                    onChordMaxChange={reloadComparisonChords}
                   />
                 </div>
               ) : (
@@ -1906,6 +1937,8 @@ export default function App() {
                   matchingClusters={matchingClusters}
                   highlightResidues={highlightResidues}
                   onToggleResidue={(r) => selectResidue(r, true)}
+                  clusterTopK={clusterTopK}
+                  onClusterTopKChange={setClusterTopK}
                 />
               </div>
             ) : tab === "umap" && vizData[currentCacheKey]?.clusters ? (
@@ -1953,11 +1986,18 @@ export default function App() {
             // beiden gezeigt; die Δ-Färbung gilt symmetrisch für beide.
             const ligName = (lig) => lig === 2 ? session?.ligand_name_2 : session?.ligand_name_1;
             const hlFor = (lig) => {
-              const base = lig === activeLigand ? highlightResidues : [];
+              // Im Δ-Modus kein Selektions-Pink — dort zählt nur die Δ-Färbung.
+              const base = (viewer3dMode === "diff" || lig !== activeLigand)
+                ? [] : highlightResidues;
               return hoverResidue3D ? [...base, hoverResidue3D] : base;
             };
             const colorsFor = () => viewer3dMode === "diff" ? diffResidueColors : null;
-            const Pane = ({ lig }) => (
+            // WICHTIG: als reine Render-Funktion aufrufen (renderPane(lig)),
+            // NICHT als <Pane/>-Komponente. Eine inline definierte Komponente
+            // erhält bei jedem Render eine neue Funktionsidentität → React
+            // unmountet/remountet sie → der 3Dmol-Viewer würde neu erzeugt und
+            // per zoomTo() die vom Nutzer gesetzte Rotation zurücksetzen.
+            const renderPane = (lig) => (
               <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
                 borderTop: lig === 2 ? `1px solid ${C.border}` : "none" }}>
                 <div style={{ padding: "4px 10px", display: "flex", alignItems: "center",
@@ -1973,7 +2013,8 @@ export default function App() {
                 <div style={{ flex: 1, minHeight: 0 }}>
                   {comparisonPdb[lig] ? (
                     <Viewer3D pdbData={comparisonPdb[lig]}
-                      highlightResidues={hlFor(lig)} residueColors={colorsFor()} />
+                      highlightResidues={hlFor(lig)} residueColors={colorsFor()}
+                      baseColor={viewer3dMode === "diff" ? "#9aa0a6" : "#6c7bd4"} />
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
                       height: "100%", padding: 12, textAlign: "center", fontSize: 10, color: C.textMuted }}>
@@ -1989,7 +2030,7 @@ export default function App() {
                   display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>3D Viewer · Vergleich</span>
                   <div style={{ display: "flex" }}>
-                    {[["cluster", "Cluster-Residuen"], ["diff", "Δ-Belegung"]].map(([m, lbl], i) => (
+                    {[["cluster", "Structural-IFP-Residuen"], ["diff", "Δ-Belegung"]].map(([m, lbl], i) => (
                       <div key={m} onClick={() => setViewer3dMode(m)} style={{
                         padding: "2px 8px", cursor: "pointer", fontSize: 10, fontWeight: 600,
                         borderRadius: 4, marginLeft: i === 0 ? 0 : -1,
@@ -2000,8 +2041,8 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-                <Pane lig={1} />
-                <Pane lig={2} />
+                {renderPane(1)}
+                {renderPane(2)}
               </>
             );
           })() : (

@@ -19,18 +19,8 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { arc as d3arc } from "d3-shape";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  surfaceLight: "#222738",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#4a5568",
-  inactive: "#2d3348",
-};
+import { C } from "./comparison/theme";
+import { EmptyState } from "./ui";
 
 // ─── One donut renderer (used both in sidebar minis and focus pane) ───
 function Donut({ residue, rings, size, label, hoveredType, onTypeHover }) {
@@ -68,7 +58,7 @@ function Donut({ residue, rings, size, label, hoveredType, onTypeHover }) {
         const a1 = -Math.PI / 2 + ((cumulative + seg.size) / total) * 2 * Math.PI;
         cumulative += seg.size;
         const path = arcGen({ startAngle: a0, endAngle: a1 });
-        const fill = seg.value === 1 ? ring.color : C.inactive;
+        const fill = seg.value === 1 ? ring.color : C.border;
         return { key: `${ringIdx}-${segIdx}`, path, fill };
       });
       return { ringIdx, type: ring.interaction_type, color: ring.color, segs,
@@ -168,11 +158,7 @@ export default function CircleView({
   }, []);
 
   if (!data?.residues?.length) {
-    return (
-      <div style={{ padding: 20, color: C.textDim, fontSize: 12 }}>
-        Keine Daten
-      </div>
-    );
+    return <EmptyState>Noch keine Residuen-Daten geladen.</EmptyState>;
   }
 
   // Normalize the selection prop — accept either a single label

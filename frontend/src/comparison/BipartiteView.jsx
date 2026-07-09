@@ -9,9 +9,10 @@
 import { useMemo, useRef, useState } from "react";
 import { C, BLUE1, BLUE2, useResize, useLigandFilter } from "./theme";
 import { VizFrame, LigandLegend, Swatch, Note, Tooltip } from "./VizChrome";
+import { EmptyState, NumberControl } from "../ui";
 
 export default function BipartiteView({
-  data, selectedClusters, activeLigand, onSelectCluster,
+  data, selectedClusters, activeLigand, onSelectCluster, topK, onTopKChange,
 }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
@@ -49,7 +50,7 @@ export default function BipartiteView({
   }, [matrix, thresh, n1, n2]);
 
   if (!n1 || !n2) {
-    return <div style={{ color: C.textDim, padding: 24 }}>Keine Cluster-Daten.</div>;
+    return <EmptyState>Noch keine Structural-IFP-Daten.</EmptyState>;
   }
 
   const plotH = height;
@@ -72,8 +73,18 @@ export default function BipartiteView({
   // Eine Kante ist sichtbar, solange keiner ihrer beiden Liganden ausgeblendet ist.
   const edgeVisible = !filter.isHidden(1) && !filter.isHidden(2);
 
+  const maxTopK = Math.max(
+    data?.n_clusters1_total || 1, data?.n_clusters2_total || 1);
+
   const toolbar = (
     <>
+      {onTopKChange && (
+        <>
+          <NumberControl label="Modi je Ligand" value={topK}
+            min={1} max={maxTopK} step={1} onChange={onTopKChange} />
+          <span style={{ width: 1, height: 16, background: C.border, margin: "0 6px" }} />
+        </>
+      )}
       <span style={{ color: C.textDim }}>Kante wenn Distanz ≤</span>
       <input type="range" min={dmin} max={dmax} step={0.5} value={thresh}
         onChange={(e) => setThresh(parseFloat(e.target.value))}
@@ -162,7 +173,7 @@ export default function BipartiteView({
           <Tooltip color={hover.side === 1 ? BLUE1 : BLUE2}
             left={Math.min(hover.x + 14, width - 180)}
             top={Math.min(hover.y + 14, height - 80)}>
-            <div style={{ fontWeight: 600 }}>{name} · Cluster {c.cluster_id}</div>
+            <div style={{ fontWeight: 600 }}>{name} · Structural IFP {c.cluster_id}</div>
             <div style={{ color: C.textDim }}>{c.occupancy} Frames · {c.size} IFPs</div>
             <div style={{ color: C.textMuted, fontSize: 10 }}>
               {hoveredEdges.length} ähnliche Modi · Klick = selektieren

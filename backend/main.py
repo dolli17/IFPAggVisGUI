@@ -279,10 +279,10 @@ def api_data_comparison_residues():
 
 
 @app.get("/api/data/comparison/chords")
-def api_data_comparison_chords():
+def api_data_comparison_chords(max_chords: int = 600):
     """Residuen-Ko-Vorkommens-Netzwerk (Chord-Diagramm)."""
     try:
-        return data_comparison_chords(session)
+        return data_comparison_chords(session, max_chords=max_chords)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

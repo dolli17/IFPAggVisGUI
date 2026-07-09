@@ -10,6 +10,7 @@
 import { useMemo, useRef, useState } from "react";
 import { C, BLUE1, BLUE2, useResize } from "./theme";
 import { VizFrame, LigandLegend, Swatch, Note } from "./VizChrome";
+import { EmptyState, NumberControl } from "../ui";
 
 const MODES = [
   { id: "both", label: "Beide" },
@@ -18,7 +19,7 @@ const MODES = [
   { id: "diff", label: "Differenz" },
 ];
 
-export default function ChordView({ data, onHoverResidue }) {
+export default function ChordView({ data, onHoverResidue, maxChords, onMaxChordsChange }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
   const { width, height } = useResize(wrapRef);
@@ -53,7 +54,7 @@ export default function ChordView({ data, onHoverResidue }) {
     [chords, mode, thr],
   );
 
-  if (!n) return <div style={{ color: C.textDim, padding: 24 }}>Keine Daten.</div>;
+  if (!n) return <EmptyState>Noch keine Chord-Daten.</EmptyState>;
 
   const plotH = height;
   const cx = width / 2, cy = plotH / 2;
@@ -87,6 +88,14 @@ export default function ChordView({ data, onHoverResidue }) {
         {(thr * 100).toFixed(0)}%
       </span>
       <span style={{ color: C.textMuted }}>· {visible.length} Kanten</span>
+      {onMaxChordsChange && (
+        <>
+          <span style={{ width: 1, height: 16, background: C.border, margin: "0 6px" }} />
+          <NumberControl label="Max. Bögen" value={maxChords}
+            min={10} max={Math.max(10, data?.n_chords_total || 10)} step={10}
+            onChange={onMaxChordsChange} />
+        </>
+      )}
     </>
   );
 

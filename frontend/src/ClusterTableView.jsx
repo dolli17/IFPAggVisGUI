@@ -13,18 +13,12 @@
 // ═══════════════════════════════════════════════════════════════════
 import { useMemo, useState } from "react";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  surfaceLight: "#222738",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  pinkDim: "rgba(244,114,182,0.15)",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#4a5568",
-};
+import { C } from "./comparison/theme";
+import { EmptyState, NumberControl } from "./ui";
+import { CLUSTER_MAX_TOP_K } from "./clusterColors";
+import {
+  RESIDUE_CLASSES, residueClassColor, residueClassBorder,
+} from "./residueClasses";
 
 const COLS = [
   { id: "rank",     label: "#",        align: "right",  width: 44 },
@@ -38,26 +32,13 @@ const COLS = [
   { id: "residues", label: "Residuen", align: "left" },
 ];
 
-// Stable, hash-derived colour per residue label. The same residue gets
-// the same pill colour across all rows, which makes recurring residues
-// pop visually. Uses a muted HSL palette that reads well on dark theme.
-function residueColor(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  }
-  const hue = h % 360;
-  // 45 % sat, 32 % light = visible but not screaming on dark surface
-  return `hsl(${hue}, 45%, 32%)`;
-}
-function residueBorder(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  }
-  const hue = h % 360;
-  return `hsl(${hue}, 50%, 55%)`;
-}
+// Residue pills are coloured by chemical class (see residueClasses.js),
+// not per individual residue. Every residue of the same class shares one
+// colour, which turns the pill row into a readable "what kind of contacts
+// does this mode make?" summary instead of a rainbow. The legend in the
+// table footer maps colour to class.
+const residueColor = residueClassColor;
+const residueBorder = residueClassBorder;
 
 // Pattern strip — one tiny rect per interaction column, filled with the
 // cluster's colour when the pattern bit is 1, dimmed when 0. The whole
@@ -145,8 +126,11 @@ export default function ClusterTableView({
   matchingClusters, // optional: Set<number> of cluster ids matching residue discovery
   highlightResidues,// optional: string[] of currently-highlighted residues (drives pill colour)
   onToggleResidue,  // optional: (residue) => void — called when a pill is clicked
+  clusterTopK,      // shared: how many top clusters get a categorical colour
+  onClusterTopKChange, // (n) => void
 }) {
   const [sortBy, setSortBy] = useState("rank");
+  const [pillN, setPillN] = useState(8);
   const [sortDir, setSortDir] = useState("asc"); // rank asc == frames desc, which is the natural order
   const [topOnly, setTopOnly] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
@@ -232,11 +216,7 @@ export default function ClusterTableView({
 
   if (!data?.clusters?.length || !clusterColors) {
     return (
-      <div style={{
-        padding: 24, fontSize: 12, color: C.textDim,
-      }}>
-        Keine Cluster-Daten geladen. (Aggregation ausführen.)
-      </div>
+      <EmptyState>Noch keine Structural-IFP-Daten — Aggregation ausführen.</EmptyState>
     );
   }
 
@@ -322,7 +302,7 @@ export default function ClusterTableView({
             Top Binding Modes
           </span>
           <span style={{ fontSize: 10, color: C.textDim }}>
-            {data.n_clusters} strukturelle Cluster über {data.n_ifps}
+            {data.n_clusters} Structural IFPs über {data.n_ifps}
             {" "}zeitbasierte IFPs · {total} Frames gesamt
             {(filterQuery.trim() || patternColFilter != null) && (
               <span style={{ color: C.pink, marginLeft: 8 }}>
@@ -395,6 +375,13 @@ export default function ClusterTableView({
             onChange={e => setTopOnly(e.target.checked)} />
           nur Top {topK}
         </label>
+        {onClusterTopKChange && (
+          <NumberControl label="Farb-Cluster" value={clusterTopK}
+            min={1} max={Math.max(1, Math.min(CLUSTER_MAX_TOP_K, data.n_clusters || 1))} step={1}
+            onChange={onClusterTopKChange} />
+        )}
+        <NumberControl label="Residuen-Pills" value={pillN}
+          min={1} max={20} step={1} onChange={setPillN} />
       </div>
 
       {/* ── Residue cloud (Phase B4) ── */}
@@ -437,7 +424,7 @@ export default function ClusterTableView({
                     onClick={() => onToggleResidue?.(name)}
                     title={`${frames.toLocaleString("de-DE")} Frames in `
                           + `${data.clusters.filter(c => (c.active_residues || []).includes(name)).length}`
-                          + ` Clustern`}
+                          + ` Structural IFPs`}
                     style={{
                       padding: "1px 7px", borderRadius: 10,
                       fontSize: fs, lineHeight: 1.3, fontWeight: 600,
@@ -474,7 +461,7 @@ export default function ClusterTableView({
                 background: clusterColors.colorOf(c.cluster_id),
                 color: "#fff", fontSize: 10, fontWeight: 600,
                 border: "1px solid rgba(255,255,255,0.2)",
-              }}>Cluster {c.cluster_id}</span>
+              }}>Structural IFP {c.cluster_id}</span>
             ))}
             <span style={{ color: C.textMuted, fontSize: 10, marginLeft: 8 }}>
               (⌘/Ctrl+Klick auf weitere Cluster zum Hinzufügen)
@@ -544,8 +531,8 @@ export default function ClusterTableView({
                     onClick={() => handleSort(col)}
                     title={col.id === "diff"
                       ? (diffRefCid != null
-                        ? `Residuen-Unterschiede zum ausgewählten Cluster ${diffRefCid}`
-                        : "Residuen-Unterschiede zum vorherigen Cluster (sortiert nach Häufigkeit)")
+                        ? `Residuen-Unterschiede zum ausgewählten Structural IFP ${diffRefCid}`
+                        : "Residuen-Unterschiede zum vorherigen Structural IFP (sortiert nach Häufigkeit)")
                       : undefined}
                     style={{
                       padding: "6px 8px", textAlign: col.align,
@@ -707,17 +694,17 @@ export default function ClusterTableView({
                     overflow: "hidden",
                     lineHeight: 1.5,
                   }} title={r.residues?.join(", ") || ""}>
-                    {r.residues?.slice(0, 8).map((res) => (
+                    {r.residues?.slice(0, pillN).map((res) => (
                       <ResiduePill key={res} name={res}
                         active={highlightResidues?.includes(res)}
                         onToggle={onToggleResidue} />
                     ))}
-                    {r.residues?.length > 8 && (
+                    {r.residues?.length > pillN && (
                       <span style={{
                         fontSize: 10, color: C.textMuted, fontWeight: 600,
                         verticalAlign: "middle",
                       }}>
-                        +{r.residues.length - 8}
+                        +{r.residues.length - pillN}
                       </span>
                     )}
                   </td>
@@ -747,14 +734,32 @@ export default function ClusterTableView({
           {" "}Treffer (Residuen-Discovery)
         </span>
         <span>
-          Zeile = Cluster wählen · Pille = Residuum (de)markieren
+          Zeile = Structural IFP wählen · Pille = Residuum (de)markieren
         </span>
         <span style={{ flex: 1 }} />
         <span>
           {diffRefCid != null
-            ? `Δ zu C${diffRefCid} = Pattern-Unterschiede zum ausgewählten Cluster`
-            : "Δ zu Top = Pattern-Unterschiede zum vorherigen Cluster (Klick auf Cluster → Δ zu diesem Cluster)"}
+            ? `Δ zu C${diffRefCid} = Pattern-Unterschiede zum ausgewählten Structural IFP`
+            : "Δ zu Top = Pattern-Unterschiede zum vorherigen Structural IFP (Klick auf Structural IFP → Δ zu diesem Structural IFP)"}
         </span>
+      </div>
+
+      {/* ── Residue-class legend ── */}
+      <div style={{
+        padding: "5px 16px", fontSize: 9, color: C.textMuted,
+        borderTop: `1px solid ${C.border}`,
+        display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center",
+      }}>
+        <span style={{ color: C.textDim, fontWeight: 600 }}>Residuen-Klasse:</span>
+        {RESIDUE_CLASSES.map((rc) => (
+          <span key={rc.id} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span style={{
+              width: 9, height: 9, borderRadius: 5,
+              background: rc.fill, border: `1px solid ${rc.border}`,
+            }} />
+            {rc.label}
+          </span>
+        ))}
       </div>
     </div>
   );

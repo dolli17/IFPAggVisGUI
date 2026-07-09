@@ -9,9 +9,10 @@
 import { useMemo, useRef, useState } from "react";
 import { C, BLUE1, BLUE2, useResize } from "./theme";
 import { VizFrame, Colorbar, Swatch, Note, Tooltip } from "./VizChrome";
+import { EmptyState, NumberControl } from "../ui";
 
 export default function ClusterMatrixView({
-  data, selectedClusters, activeLigand, onSelectCluster,
+  data, selectedClusters, activeLigand, onSelectCluster, topK, onTopKChange,
 }) {
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
@@ -32,7 +33,7 @@ export default function ClusterMatrixView({
   }, [matrix]);
 
   if (!n1 || !n2) {
-    return <div style={{ color: C.textDim, padding: 24 }}>Keine Cluster-Daten.</div>;
+    return <EmptyState>Noch keine Structural-IFP-Daten.</EmptyState>;
   }
 
   const simUpper = data?.thresholds?.similar_upper ?? 0;
@@ -54,10 +55,17 @@ export default function ClusterMatrixView({
 
   const showLabel = cell >= 12;
 
+  const maxTopK = Math.max(
+    data?.n_clusters1_total || 1, data?.n_clusters2_total || 1);
+
   return (
     <VizFrame
-      title="Kreuzmatrix — Cluster-Distanzen L1 × L2"
-      subtitle="Heatmap der Distanz zwischen den häufigsten Modi beider Liganden. Zeilen = Ligand 1, Spalten = Ligand 2 (nach Verweildauer sortiert). Klick auf ein Label selektiert den Cluster."
+      title="Kreuzmatrix — Structural-IFP-Distanzen L1 × L2"
+      subtitle="Heatmap der Distanz zwischen den häufigsten Modi beider Liganden. Zeilen = Ligand 1, Spalten = Ligand 2 (nach Verweildauer sortiert). Klick auf ein Label selektiert den Structural IFP."
+      toolbar={onTopKChange && (
+        <NumberControl label="Modi je Ligand" value={topK}
+          min={1} max={maxTopK} step={1} onChange={onTopKChange} />
+      )}
       legend={<>
         <Colorbar colorFn={barColor} caption="Distanz:" leftLabel="fern" rightLabel="ähnlich" />
         <Swatch shape="ring" color="#ffffff" label={`identisch (≤${identUpper})`} />
@@ -70,11 +78,11 @@ export default function ClusterMatrixView({
         style={{ display: "block", background: C.bg }}>
         {/* Achsen-Titel */}
         <text x={labelL + gridW / 2} y={14} textAnchor="middle"
-          fontSize={11} fill={BLUE2}>{data.lig2_name} — Cluster (Spalten)</text>
+          fontSize={11} fill={BLUE2}>{data.lig2_name} — Structural IFP (Spalten)</text>
         <text x={14} y={labelT + gridH / 2} fontSize={11} fill={BLUE1}
           textAnchor="middle"
           transform={`rotate(-90 14 ${labelT + gridH / 2})`}>
-          {data.lig1_name} — Cluster (Zeilen)
+          {data.lig1_name} — Structural IFP (Zeilen)
         </text>
 
         {/* Spalten-Labels */}
@@ -155,7 +163,7 @@ export default function ClusterMatrixView({
             </div>
             <div style={{ color: C.textDim }}>Distanz: {v.toFixed(1)}</div>
             <div style={{ color: C.textMuted, fontSize: 10 }}>
-              Occ. {rc.occupancy} / {cc.occupancy} Frames · Klick = L1-Cluster selektieren
+              Occ. {rc.occupancy} / {cc.occupancy} Frames · Klick = L1-Structural-IFP selektieren
             </div>
           </Tooltip>
         );

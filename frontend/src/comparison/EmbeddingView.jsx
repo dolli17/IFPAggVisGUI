@@ -8,6 +8,7 @@
 import { useMemo, useRef, useState } from "react";
 import { C, ligColor, useResize, useLigandFilter } from "./theme";
 import { VizFrame, LigandLegend, Note, Tooltip } from "./VizChrome";
+import { EmptyState } from "../ui";
 
 export default function EmbeddingView({
   data, selectedClusters, activeLigand, onSelectCluster,
@@ -30,7 +31,7 @@ export default function EmbeddingView({
   }, [points]);
 
   if (!points.length || !layout) {
-    return <div style={{ color: C.textDim, padding: 24 }}>Kein Embedding.</div>;
+    return <EmptyState>Noch kein Embedding berechnet.</EmptyState>;
   }
 
   const M = 28;
@@ -88,7 +89,7 @@ export default function EmbeddingView({
               left={Math.min(sx(p.x) + 14, width - 170)}
               top={Math.min(sy(p.y) + 14, height - 70)}>
               <div style={{ fontWeight: 600 }}>
-                {p.lig === 1 ? data.lig1_name : data.lig2_name} · Cluster {p.cluster_id}
+                {p.lig === 1 ? data.lig1_name : data.lig2_name} · Structural IFP {p.cluster_id}
               </div>
               <div style={{ color: C.textDim }}>{p.occupancy} Frames</div>
             </Tooltip>

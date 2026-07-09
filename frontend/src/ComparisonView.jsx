@@ -18,20 +18,10 @@
 // ═══════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useRef, useState } from "react";
 import { VizFrame, Swatch, Note } from "./comparison/VizChrome";
-
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  surfaceLight: "#22273a",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#5a6580",
-};
+import { C } from "./comparison/theme";
 
 // Farben 1:1 aus dem Matplotlib-Plot (tab20 / tab20c).
+// Bewusst LOKAL (nicht aus theme.js): Six-Lane bleibt paper-treu.
 const BLUE1 = "#1f77b4";  // Ligand 1 + Within-L1-Linien
 const BLUE2 = "#6baed6";  // Ligand 2 + Within-L2-Linien
 const RED = "#d62728";    // ähnlich zwischen Liganden
@@ -254,7 +244,7 @@ export default function ComparisonView({
   return (
     <VizFrame
       title="Six-Lane — Ligandenvergleich (Paper-Layout)"
-      subtitle="Sechs Spuren: a–c = Ligand 1, d–f = Ligand 2. Linien verbinden IFPs, die zwischen oder innerhalb der Liganden identisch bzw. ähnlich sind. Hover hebt alle Verbindungen einer IFP hervor, Klick selektiert deren Cluster."
+      subtitle="Sechs Spuren: a–c = Ligand 1, d–f = Ligand 2. Linien verbinden IFPs, die zwischen oder innerhalb der Liganden identisch bzw. ähnlich sind. Hover hebt alle Verbindungen einer IFP hervor, Klick selektiert deren Structural IFP."
       toolbar={toolbar}
       legend={<>
         <Swatch shape="line" color={CYAN} label="identisch (zwischen Liganden)" />
@@ -366,11 +356,11 @@ export default function ComparisonView({
               {hover.lig === 1 ? data.lig1_name : data.lig2_name} · IFP #{hover.local}
             </div>
             <div style={{ color: C.textDim }}>
-              Cluster {hoverIfp.cluster_id ?? "—"} · {hoverIfp.occurence} Frames
+              Structural IFP {hoverIfp.cluster_id ?? "—"} · {hoverIfp.occurence} Frames
             </div>
             <div style={{ color: C.textMuted, fontSize: 10 }}>
               {highlightIdx.length} Verbindung{highlightIdx.length === 1 ? "" : "en"}
-              {hoverIfp.cluster_id != null ? " · Klick = Cluster selektieren" : ""}
+              {hoverIfp.cluster_id != null ? " · Klick = Structural IFP selektieren" : ""}
             </div>
           </div>
         )}

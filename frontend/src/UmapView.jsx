@@ -14,17 +14,8 @@
 // ═══════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  surfaceLight: "#22273a",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-  textMuted: "#5a6580",
-};
+import { C } from "./comparison/theme";
+import { EmptyState } from "./ui";
 
 const MARGIN = { top: 16, right: 24, bottom: 24, left: 24 };
 
@@ -97,11 +88,7 @@ export default function UmapView({
   }, [showPath, data, geometry]);
 
   if (!data?.clusters?.length || !geometry) {
-    return (
-      <div style={{ color: C.textDim, padding: 24, fontSize: 13 }}>
-        Keine UMAP-Daten — bitte Aggregation ausführen.
-      </div>
-    );
+    return <EmptyState>Noch keine UMAP-Daten — Aggregation ausführen.</EmptyState>;
   }
 
   const hoverCluster = hoverCid != null
@@ -124,8 +111,9 @@ export default function UmapView({
           </span>
         </label>
         {data.params && (
-          <span style={{ color: C.textMuted, fontSize: 10 }}>
-            UMAP · n_neighbors={data.params.n_neighbors} · min_dist={data.params.min_dist} · {data.params.metric}
+          <span style={{ color: C.textMuted, fontSize: 10 }}
+            title="Die Achsen sind UMAP-Einbettungskoordinaten — dimensionslos; nur relative Abstände der Structural IFPs sind interpretierbar.">
+            UMAP (Achsen dimensionslos) · n_neighbors={data.params.n_neighbors} · min_dist={data.params.min_dist} · {data.params.metric}
           </span>
         )}
       </div>
@@ -179,15 +167,20 @@ export default function UmapView({
       {hoverCluster && (
         <div style={{
           position: "absolute",
-          left: Math.min(hoverPos.x + 12, width - 180),
-          top: Math.min(hoverPos.y + 12, height - 80),
+          // An den Rändern kippen statt abschneiden: ragt der Tooltip
+          // über rechts/unten hinaus, links/oberhalb des Cursors zeigen.
+          left: hoverPos.x + 12 + 200 > width
+            ? Math.max(4, hoverPos.x - 12 - 200) : hoverPos.x + 12,
+          top: hoverPos.y + 12 + 86 > height
+            ? Math.max(4, hoverPos.y - 12 - 86) : hoverPos.y + 12,
+          maxWidth: 200,
           padding: "6px 10px", borderRadius: 4,
           background: C.surface,
           border: `1px solid ${clusterColors?.colorOf(hoverCluster.cluster_id) || C.border}`,
           color: C.text, fontSize: 11, lineHeight: 1.4,
           pointerEvents: "none", zIndex: 3,
         }}>
-          <div style={{ fontWeight: 600 }}>Cluster {hoverCluster.cluster_id}</div>
+          <div style={{ fontWeight: 600 }}>Structural IFP {hoverCluster.cluster_id}</div>
           <div style={{ color: C.textDim }}>
             {hoverCluster.frame_count}× Frames · {hoverCluster.n_active} aktive Residuen
           </div>

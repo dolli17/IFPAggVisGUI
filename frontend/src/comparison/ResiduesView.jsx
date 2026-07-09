@@ -9,6 +9,7 @@
 import { useRef, useState } from "react";
 import { C, BLUE1, BLUE2, useResize, useLigandFilter } from "./theme";
 import { VizFrame, LigandLegend, Swatch, Note, Tooltip } from "./VizChrome";
+import { EmptyState, NumberControl } from "../ui";
 
 export default function ResiduesView({ data, onHoverResidue }) {
   const hoverToken = (r) => onHoverResidue?.(r ? String(r.name).split("_")[0] : null);
@@ -16,11 +17,12 @@ export default function ResiduesView({ data, onHoverResidue }) {
   const svgRef = useRef(null);
   const { width, height } = useResize(wrapRef);
   const [hover, setHover] = useState(null);
+  const [labelN, setLabelN] = useState(8);
   const filter = useLigandFilter();
 
   const residues = data?.residues || [];
   if (!residues.length) {
-    return <div style={{ color: C.textDim, padding: 24 }}>Keine Residuen-Daten.</div>;
+    return <EmptyState>Noch keine Residuen-Daten.</EmptyState>;
   }
 
   const M = { top: 24, right: 24, bottom: 44, left: 48 };
@@ -36,12 +38,16 @@ export default function ResiduesView({ data, onHoverResidue }) {
   const colorOf = (r) => (r.l1 >= r.l2 ? BLUE1 : BLUE2);
   const shown = (r) => !filter.isHidden(domLig(r));
   // Top-Unterschiede beschriften (data ist nach diff sortiert)
-  const labelN = 8;
 
   return (
     <VizFrame
       title="Residuen — Belegungsvergleich"
       subtitle="Pro Interaktion ein Punkt: x = Anteil belegter Frames in Ligand 1, y = in Ligand 2. Auf der Diagonale = in beiden gleich, abseits = ligandenspezifisch."
+      toolbar={
+        <NumberControl label="Labels" value={labelN}
+          min={0} max={Math.min(40, residues.length)} step={1}
+          onChange={setLabelN} />
+      }
       legend={<>
         <LigandLegend data={data} filter={filter} />
         <Swatch shape="dash" color={C.textMuted} label="Diagonale = gleiche Belegung" />

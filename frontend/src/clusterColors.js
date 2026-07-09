@@ -14,13 +14,19 @@
 // sessions, but cluster IDs aren't either.
 // ═══════════════════════════════════════════════════════════════════
 
-// Tableau10 — categorical colours that read well on a dark background.
+// Curated categorical palette that reads well on a dark background: the
+// ten Tableau10 colours plus a vivid cyan and olive to stretch to twelve.
+// Twelve is the deliberate ceiling — beyond roughly a dozen, categorical
+// colours are no longer reliably distinguishable, so we cap here instead
+// of inventing more (the earlier golden-angle generation was dropped).
 const PALETTE = [
   "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
   "#edc949", "#af7aa1", "#ff9da7", "#9c755f", "#bab0ab",
+  "#17becf", "#bcbd22",
 ];
 const FALLBACK = "#3a3f4f";   // used if cluster id < 0 or no clusters at all
-const TOP_K = PALETTE.length;
+const DEFAULT_TOP_K = 10;     // default number of categorical top clusters
+const MAX_TOP_K = PALETTE.length;   // hard ceiling (palette size)
 
 // ── tiny HSL helpers (no extra dependency) ─────────────────────────
 function hexToRgb(hex) {
@@ -103,8 +109,10 @@ function hamming(a, b) {
  *
  * @param {Array<{cluster_id:number, pattern:number[]}>} clusters
  *        Output of `/api/data/clusters` (the `clusters` array — already
- *        sorted by frame_count desc, so the first `TOP_K` entries are
+ *        sorted by frame_count desc, so the first `topK` entries are
  *        the categorical ones).
+ * @param {number} [topK] How many top clusters get their own categorical
+ *        colour (default 10, hard-capped at the palette size of 12).
  * @returns {{
  *   colorOf: (cid:number) => string,
  *   nearestTopOf: (cid:number) => number|null,
@@ -112,7 +120,7 @@ function hamming(a, b) {
  *   topCount: number,
  * }}
  */
-export function buildClusterColors(clusters) {
+export function buildClusterColors(clusters, topK = DEFAULT_TOP_K) {
   if (!clusters || !clusters.length) {
     return {
       colorOf: () => FALLBACK,
@@ -122,8 +130,11 @@ export function buildClusterColors(clusters) {
     };
   }
 
-  const topCount = Math.min(TOP_K, clusters.length);
+  // Cap at the palette size: beyond a dozen categorical colours are no
+  // longer reliably distinguishable, so we never colour more than that.
+  const topCount = Math.min(Math.max(1, topK), clusters.length, MAX_TOP_K);
   const topClusters = clusters.slice(0, topCount);
+  const palette = PALETTE;
 
   // Pre-compute nearest top + distance for every non-top cluster.
   // For top-K clusters themselves we record nearest=self / dist=0.
@@ -150,9 +161,9 @@ export function buildClusterColors(clusters) {
   const colors = new Array(clusters.length);
   for (let i = 0; i < clusters.length; i++) {
     if (i < topCount) {
-      colors[i] = PALETTE[i];
+      colors[i] = palette[i];
     } else {
-      const base = PALETTE[nearestTop[i]];
+      const base = palette[nearestTop[i]];
       const t = maxRestDist > 0 ? distToTop[i] / maxRestDist : 0;
       colors[i] = shiftColour(base, t);
     }
@@ -171,5 +182,6 @@ export function buildClusterColors(clusters) {
   };
 }
 
-export const CLUSTER_TOP_K = TOP_K;
+export const CLUSTER_TOP_K = DEFAULT_TOP_K;
+export const CLUSTER_MAX_TOP_K = MAX_TOP_K;
 export const CLUSTER_FALLBACK = FALLBACK;

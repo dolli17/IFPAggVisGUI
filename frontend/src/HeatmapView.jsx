@@ -21,15 +21,8 @@
 // ═══════════════════════════════════════════════════════════════════
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const C = {
-  bg: "#0f1117",
-  surface: "#1a1d27",
-  border: "#2d3348",
-  accent: "#6c7bd4",
-  pink: "#f472b6",
-  text: "#e2e8f0",
-  textDim: "#8892a8",
-};
+import { C } from "./comparison/theme";
+import { EmptyState } from "./ui";
 
 const MARGIN = { top: 16, right: 24, bottom: 36, left: 56 };
 
@@ -415,9 +408,7 @@ export default function HeatmapView({
       borderRadius: 8, border: `1px solid ${C.border}`,
     }}>
       {!geometry ? (
-        <div style={{ padding: 20, color: C.textDim, fontSize: 12 }}>
-          Keine Daten
-        </div>
+        <EmptyState>Noch keine Distanzmatrix geladen.</EmptyState>
       ) : (
         <>
           {/* Clip the canvas to the inner area so panned-out portions
@@ -662,7 +653,10 @@ export default function HeatmapView({
             display: "flex", flexDirection: "column", alignItems: "flex-end",
             gap: 4, fontSize: 10, color: C.textDim,
           }}>
-            <span style={{ pointerEvents: "none" }}>Distanz</span>
+            <span style={{ pointerEvents: "none" }}
+              title="Hamming-Distanz: Anzahl unterschiedlicher Interaktionspositionen zwischen zwei IFPs">
+              Distanz (Hamming)
+            </span>
             <div style={{
               width: 110, height: 10, borderRadius: 2,
               background: `linear-gradient(to right, ${
@@ -676,6 +670,9 @@ export default function HeatmapView({
               <span>0</span>
               <span>{Math.round(geometry.maxD)}</span>
             </div>
+            <span style={{ fontSize: 9, opacity: 0.7, pointerEvents: "none" }}>
+              unterschiedl. Interaktionen
+            </span>
             {/* Zoom hint + reset */}
             <div style={{ display: "flex", alignItems: "center", gap: 6,
                           marginTop: 2 }}>

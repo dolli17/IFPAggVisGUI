@@ -42,6 +42,7 @@ const KIND_OF = {
 export default function ComparisonTab({
   data, encodings, onLoadEncoding,
   selectedClusters, activeLigand, onSelectCluster, onHoverResidue,
+  cmpClusterTopK, onCmpClusterTopKChange, chordMax, onChordMaxChange,
 }) {
   const [encoding, setEncoding] = useState("sixlane");
   const requested = useRef(new Set());
@@ -72,11 +73,14 @@ export default function ComparisonTab({
           : "Lade…"}
       </div>
     );
-  } else if (encoding === "clusters") body = <ClusterMatrixView data={payload} {...sub} />;
-  else if (encoding === "bipartite") body = <BipartiteView data={payload} {...sub} />;
+  } else if (encoding === "clusters") body = <ClusterMatrixView data={payload} {...sub}
+    topK={cmpClusterTopK} onTopKChange={onCmpClusterTopKChange} />;
+  else if (encoding === "bipartite") body = <BipartiteView data={payload} {...sub}
+    topK={cmpClusterTopK} onTopKChange={onCmpClusterTopKChange} />;
   else if (encoding === "embedding") body = <EmbeddingView data={payload} {...sub} />;
   else if (encoding === "residues") body = <ResiduesView data={payload} onHoverResidue={onHoverResidue} />;
-  else if (encoding === "chords") body = <ChordView data={payload} onHoverResidue={onHoverResidue} />;
+  else if (encoding === "chords") body = <ChordView data={payload} onHoverResidue={onHoverResidue}
+    maxChords={chordMax} onMaxChordsChange={onChordMaxChange} />;
 
   const Btn = ({ e }) => {
     const on = encoding === e.id;
